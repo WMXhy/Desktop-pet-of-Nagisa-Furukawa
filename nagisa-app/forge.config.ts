@@ -26,6 +26,8 @@ const config: ForgeConfig = {
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
+      // Forge 会把热更新客户端也注入 preload，而 Electron 沙箱不提供它依赖的 events 模块。
+      devServer: { hot: false, client: false },
       renderer: {
         config: rendererConfig,
         entryPoints: [
