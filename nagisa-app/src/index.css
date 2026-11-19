@@ -26,15 +26,15 @@ body,
 
 .bubble {
   position: absolute;
-  bottom: 6px;
+  bottom: 1px;
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;
-  padding: 4px 10px;
+  padding: 1px 10px;
   border-radius: 10px;
   background: #fff8ed;
   color: #50392e;
-  font: 14px/1.5 "Microsoft YaHei", sans-serif;
+  font: 14px/16px "Microsoft YaHei", sans-serif;
   pointer-events: none;
 }
 
