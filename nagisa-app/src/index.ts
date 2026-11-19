@@ -1,5 +1,5 @@
 import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type Point } from 'electron';
-import petImage from './assets/nagisa-idle.png';
+import appIcon from './assets/app-icon.png';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -12,9 +12,11 @@ const maxCoordinate = 0x7fffffff;
 let tray: Tray;
 
 async function startPet(): Promise<void> {
+  const icon = nativeImage.createFromDataURL(appIcon);
   const { x, y } = restorePosition(size);
   const petWindow = new BrowserWindow({
     title,
+    icon,
     width: size,
     height: size,
     x,
@@ -106,6 +108,7 @@ async function startPet(): Promise<void> {
 
     const window = new BrowserWindow({
       title: '渚的手账',
+      icon,
       width: 420,
       height: 320,
       show: false,
@@ -124,8 +127,7 @@ async function startPet(): Promise<void> {
     });
   }
 
-  const icon = nativeImage.createFromDataURL(petImage).resize({ width: 32, height: 32 });
-  tray = new Tray(icon);
+  tray = new Tray(icon.resize({ width: 32, height: 32, quality: 'best' }));
   tray.setToolTip(title);
 
   function recoverPet() {
