@@ -24,7 +24,6 @@ async function startPet(): Promise<void> {
     backgroundColor: '#00000000',
     hasShadow: false,
     resizable: false,
-    alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
     webPreferences: {
@@ -44,6 +43,11 @@ async function startPet(): Promise<void> {
 
   await petWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
   petWindow.showInactive();
+  petWindow.setAlwaysOnTop(true);
+  if (process.platform === 'win32' && !petWindow.isAlwaysOnTop()) {
+    // Windows 有时不会为不抢焦点的窗口应用默认置顶层级。
+    petWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  }
 }
 
 app.whenReady().then(startPet).catch((error) => {
