@@ -1,0 +1,12 @@
+# Local npm and Electron downloads
+/.npm-cache/
+/.electron-cache/
+
+# Original artwork and references kept locally
+/picture/
+
+# Dependencies and build output
+node_modules/
+.webpack/
+out/
+*.log
