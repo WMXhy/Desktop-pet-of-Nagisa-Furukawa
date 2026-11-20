@@ -2,10 +2,11 @@ import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type IpcMainInvoke
 import { mkdirSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import appIcon from './assets/app-icon.png';
-import { hugUnavailable, isActivityKind, isFoodId, isToyId, type FoodId } from './care';
+import { hugUnavailable, isActivityKind, isFoodId, isToyId, practiceLineUnavailable, type CareResponse, type FoodId } from './care';
 import { createCareRuntime } from './care-runtime';
 import { dangoHugMs, isDangoMode, isDangoSlot, type DangoMode } from './dango';
 import { homePosition, restorePosition, savePosition } from './pet-position';
+import { practiceLineMs } from './relationship';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
@@ -57,6 +58,7 @@ async function startPet(): Promise<void> {
 
   let passThrough = false;
   let gesture: { pointer: Point; origin: Point; dragged: boolean } | undefined;
+  let greetingClickUntil = 0;
 
   function updateDrag(screenX: number, screenY: number) {
     if (!gesture) return;
@@ -76,6 +78,7 @@ async function startPet(): Promise<void> {
     if (event.senderFrame !== contents.mainFrame || passThrough || !petWindow.isVisible()) return;
     if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
     const [x, y] = petWindow.getPosition();
+    greetingClickUntil = 0;
     // 使用指针事件发生时的屏幕坐标，避免快速拖动时多条消息读到同一个鼠标位置。
     gesture = { pointer: { x: screenX, y: screenY }, origin: { x, y }, dragged: false };
   });
@@ -87,7 +90,8 @@ async function startPet(): Promise<void> {
     if (event.senderFrame !== contents.mainFrame || !gesture) return false;
     const valid = Number.isFinite(screenX) && Number.isFinite(screenY);
     if (valid) updateDrag(screenX, screenY);
-    const clicked = valid && !gesture.dragged;
+    const clicked = valid && !gesture.dragged && !passThrough && petWindow.isVisible();
+    greetingClickUntil = clicked ? performance.now() + 2000 : 0;
     gesture = undefined;
     return clicked;
   });
@@ -108,7 +112,7 @@ async function startPet(): Promise<void> {
   let journal: BrowserWindow | undefined;
   let game: BrowserWindow | undefined;
   let gameMode: DangoMode = 'classic';
-  let hugUntil = 0;
+  let interactionUntil = 0;
   const care = createCareRuntime(app.getPath('userData'), !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1', (change) => {
     for (const window of [petWindow, journal, game]) {
       if (!window || window.isDestroyed()) continue;
@@ -120,6 +124,17 @@ async function startPet(): Promise<void> {
   ipc.handle('care:read', (event) => {
     if (event.senderFrame !== contents.mainFrame) throw new Error('无效的角色请求');
     return care.read();
+  });
+
+  ipc.handle('care:greet-today', (event) => {
+    if (event.sender !== contents || !event.senderFrame || event.senderFrame !== contents.mainFrame) {
+      throw new Error('无效的问候请求');
+    }
+    if (performance.now() >= greetingClickUntil || passThrough || !petWindow.isVisible()) {
+      return { ok: false, message: '轻点渚就可以打招呼。' };
+    }
+    greetingClickUntil = 0;
+    return care.greetToday();
   });
 
   function openDangoGame(mode?: DangoMode) {
@@ -264,23 +279,26 @@ async function startPet(): Promise<void> {
           !isToyId(id) || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的玩具购买请求');
       return care.buyToy(id, revision);
     });
-    journalContents.ipc.handle('pet:hug', (event) => {
+    function requestInteraction(event: IpcMainInvokeEvent, channel: 'pet:hug' | 'pet:listen-line'): CareResponse {
       if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame) {
-        throw new Error('无效的抱玩偶请求');
+        throw new Error('无效的角色互动请求');
       }
       const snapshot = care.read();
       if (snapshot.ok === false) return snapshot;
       const { state, gameBusy } = snapshot;
-      const unavailable = hugUnavailable(state, gameBusy);
+      const hugging = channel === 'pet:hug';
+      const unavailable = hugging ? hugUnavailable(state, gameBusy) : practiceLineUnavailable(state, gameBusy);
       if (unavailable) return { ok: false, state, message: unavailable };
       if (petWindow.isDestroyed() || !petWindow.isVisible() || contents.isCrashed()) {
         return { ok: false, state, message: '请先从托盘找回角色。' };
       }
-      if (performance.now() < hugUntil) return { ok: false, state, message: '渚正在抱玩偶，等一下就能再抱。' };
-      hugUntil = performance.now() + dangoHugMs;
-      contents.send('pet:hug');
+      if (performance.now() < interactionUntil) return { ok: false, state, message: '渚正在互动，请稍后再试。' };
+      interactionUntil = performance.now() + (hugging ? dangoHugMs : practiceLineMs);
+      contents.send(channel);
       return { ok: true, state };
-    });
+    }
+    journalContents.ipc.handle('pet:hug', (event) => requestInteraction(event, 'pet:hug'));
+    journalContents.ipc.handle('pet:listen-line', (event) => requestInteraction(event, 'pet:listen-line'));
     journalContents.ipc.handle('care:claim-bread', (event, revision: number) => {
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的补给请求');
@@ -313,6 +331,7 @@ async function startPet(): Promise<void> {
 
   function recoverPet() {
     gesture = undefined;
+    greetingClickUntil = 0;
     passThrough = false;
     petWindow.setIgnoreMouseEvents(false);
     const { x, y } = homePosition(size);
@@ -328,11 +347,13 @@ async function startPet(): Promise<void> {
       { type: 'separator' },
       { label: '隐藏角色', enabled: petWindow.isVisible(), click: () => {
         gesture = undefined;
+        greetingClickUntil = 0;
         petWindow.hide();
         refreshMenu();
       } },
       { label: '鼠标穿透', type: 'checkbox', checked: passThrough, click: (item) => {
         gesture = undefined;
+        greetingClickUntil = 0;
         passThrough = item.checked;
         petWindow.setIgnoreMouseEvents(passThrough);
       } },

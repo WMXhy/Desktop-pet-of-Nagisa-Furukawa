@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { activityLogLimit, careVersion, hungerInterval, idleInterval, newCare, toyIds, upgradeCare,
-  type Care, type CareV4, type LegacyCare, type CareReadResult, type CareResponse } from './care';
+import { activityLogLimit, careVersion, hungerInterval, idleInterval, newCare, upgradeCare,
+  type Care, type CareV4, type CareV5, type LegacyCare, type CareReadResult, type CareResponse } from './care';
+import { affectionLimit, dailyAffectionLimit, milestones } from './relationship';
 
 type SaveFile = { kind: 'valid'; state: Care; original?: LegacyCare } | { kind: 'missing' | 'invalid' | 'newer' };
 
@@ -22,8 +23,8 @@ function validDay(value: unknown): boolean {
 function validCommonFields(data: Record<string, unknown>): boolean {
   return integer(data.revision) && integer(data.coins) &&
     integer(data.fullness, 100) && integer(data.energy, 100) && integer(data.mood, 100) &&
-    integer(data.affection, 300) && record(data.daily) && validDay(data.daily.day) &&
-    integer(data.daily.gained, 12) && record(data.inventory) && integer(data.inventory.bread);
+    integer(data.affection, affectionLimit) && record(data.daily) && validDay(data.daily.day) &&
+    integer(data.daily.gained, dailyAffectionLimit) && record(data.inventory) && integer(data.inventory.bread);
 }
 
 function validLegacyReward(value: unknown): boolean {
@@ -61,6 +62,20 @@ function validActivityFields(data: Record<string, unknown>, legacy: boolean): bo
     record(data.online) && integer(data.online.hungerMs, hungerInterval - 1) && integer(data.online.idleMs, idleInterval - 1);
 }
 
+function validRelationship(data: Record<string, unknown>): boolean {
+  const { lastGreetingDay, relationshipLog, affection } = data;
+  if (typeof affection !== 'number' || (lastGreetingDay !== null && !validDay(lastGreetingDay))) return false;
+  const reached = milestones.filter(({ min }) => affection >= min);
+  if (!Array.isArray(relationshipLog) || relationshipLog.length !== reached.length) return false;
+  const seen = new Set<unknown>();
+  return relationshipLog.every((entry: unknown) => {
+    if (!record(entry) || !reached.some(({ id }) => id === entry.id) || seen.has(entry.id) ||
+        (entry.unlockedAt !== null && !integer(entry.unlockedAt, 8.64e15))) return false;
+    seen.add(entry.id);
+    return true;
+  });
+}
+
 function readSave(file: string): SaveFile {
   try {
     const data: unknown = JSON.parse(readFileSync(file, 'utf8'));
@@ -74,13 +89,18 @@ function readSave(file: string): SaveFile {
           const original = data as LegacyCare;
           return { kind: 'valid', state: upgradeCare(original), original };
         }
-        if ((version === 4 || version === careVersion) && fullInventory && integer(data.studyPoints) && validActivityFields(data, false)) {
+        if ((version === 4 || version === 5 || version === careVersion) && fullInventory &&
+            integer(data.studyPoints) && validActivityFields(data, false)) {
           if (version === 4) {
             const original = data as CareV4;
             return { kind: 'valid', state: upgradeCare(original), original };
           }
-          if (record(ownedToys) && toyIds.every((id) => typeof ownedToys[id] === 'boolean')) {
-            return { kind: 'valid', state: data as Care };
+          if (record(ownedToys) && typeof ownedToys.dangoPlush === 'boolean' && typeof ownedToys.miniStage === 'boolean') {
+            if (version === 5) {
+              const original = data as CareV5;
+              return { kind: 'valid', state: upgradeCare(original), original };
+            }
+            if (validRelationship(data)) return { kind: 'valid', state: data as Care };
           }
         }
       }

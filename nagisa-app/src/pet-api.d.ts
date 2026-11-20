@@ -5,11 +5,13 @@ interface Window {
     finish(x: number, y: number): Promise<boolean>;
     cancel(): void;
     readCare(): Promise<import('./care').CareSnapshot>;
+    greetToday(): Promise<import('./care').GreetingResponse>;
     feedBread(revision: number): Promise<import('./care').CareResponse>;
     feedFood(id: import('./care').FoodId, revision: number): Promise<import('./care').CareResponse>;
     buyFood(id: import('./care').FoodId, quantity: number, revision: number): Promise<import('./care').CareResponse>;
     buyToy(id: import('./care').ToyId, revision: number): Promise<import('./care').CareResponse>;
     hugDango(): Promise<import('./care').CareResponse>;
+    listenToLine(): Promise<import('./care').CareResponse>;
     claimBread(revision: number): Promise<import('./care').CareResponse>;
     startActivity(kind: import('./care').ActivityKind, revision: number): Promise<import('./care').CareResponse>;
     cancelActivity(id: string, revision: number): Promise<import('./care').CareResponse>;
@@ -21,6 +23,7 @@ interface Window {
     onCareChanged(callback: (change: import('./care').CareChange) => void): () => void;
     onFed(callback: (id: import('./care').FoodId) => void): () => void;
     onHug(callback: () => void): () => void;
+    onListenToLine(callback: () => void): () => void;
     onDangoMode(callback: (mode: import('./dango').DangoMode) => void): () => void;
   };
 }

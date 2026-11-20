@@ -6,11 +6,13 @@ contextBridge.exposeInMainWorld('pet', {
   finish: (x, y) => ipcRenderer.invoke('pet:finish', x, y),
   cancel: () => ipcRenderer.send('pet:cancel'),
   readCare: () => ipcRenderer.invoke('care:read'),
+  greetToday: () => ipcRenderer.invoke('care:greet-today'),
   feedBread: (revision) => ipcRenderer.invoke('care:feed', revision),
   feedFood: (id, revision) => ipcRenderer.invoke('care:feed-food', id, revision),
   buyFood: (id, quantity, revision) => ipcRenderer.invoke('care:buy', id, quantity, revision),
   buyToy: (id, revision) => ipcRenderer.invoke('care:buy-toy', id, revision),
   hugDango: () => ipcRenderer.invoke('pet:hug'),
+  listenToLine: () => ipcRenderer.invoke('pet:listen-line'),
   claimBread: (revision) => ipcRenderer.invoke('care:claim-bread', revision),
   startActivity: (kind, revision) => ipcRenderer.invoke('care:start', kind, revision),
   cancelActivity: (id, revision) => ipcRenderer.invoke('care:cancel', id, revision),
@@ -33,6 +35,11 @@ contextBridge.exposeInMainWorld('pet', {
     const listener = () => callback();
     ipcRenderer.on('pet:hug', listener);
     return () => { ipcRenderer.removeListener('pet:hug', listener); };
+  },
+  onListenToLine: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('pet:listen-line', listener);
+    return () => { ipcRenderer.removeListener('pet:listen-line', listener); };
   },
   onDangoMode: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, mode: import('./dango').DangoMode) => callback(mode);

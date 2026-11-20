@@ -3,15 +3,16 @@ import { performance } from 'node:perf_hooks';
 import { powerMonitor } from 'electron';
 import { createCareStore } from './care-store';
 import { activityDurations, advanceOnline, buyFood, buyToy, cancelActivity, claimBread, dangoUnavailable, feedFood, finishDango, finishDue,
-  hungerInterval, idleInterval, localDay, startActivity,
+  greetToday as recordGreeting, hungerInterval, idleInterval, localDay, startActivity,
   type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult, type FoodId,
-  type CareSnapshot, type OnlineTime, type ToyId } from './care';
+  type CareSnapshot, type GreetingResponse, type OnlineTime, type ToyId } from './care';
 import { dangoCoverMs, dangoEnergyCost, dangoPreviewMs, dangoSlots,
   type DangoMode, type DangoPreview, type DangoResponse, type DangoResult, type DangoSlot } from './dango';
 import { drawDangoLines } from './dango-lines';
+import { newMilestones } from './relationship';
 
 type DangoSession = { preview: DangoPreview; target: DangoSlot; owner: symbol; chooseAt: number; picked?: DangoSlot };
-type CommitOptions = { completed?: ActivityRecord; writeFailure?: string;
+type CommitOptions = { completed?: ActivityRecord; writeFailure?: string; announceRelationship?: boolean;
   afterSave?: () => Pick<CareChange, 'dangoStarted' | 'dangoCompleted'> | void };
 
 export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
@@ -57,15 +58,21 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       : elapsed;
   }
 
-  function commit(state: Care, { completed, writeFailure, afterSave }: CommitOptions = {}): CareResponse {
-    const result = store.commit(state, writeFailure);
+  function commit(state: Care, { completed, writeFailure, afterSave, announceRelationship = true }: CommitOptions = {}): CareResponse {
+    const before = store.snapshot();
+    if (before.ok === false) return before;
+    const unlocked = newMilestones(before.state.affection, state.affection, state.relationshipLog.map(({ id }) => id));
+    const unlockedAt = Date.now();
+    const result = store.commit(unlocked.length > 0 ? { ...state,
+      relationshipLog: [...state.relationshipLog, ...unlocked.map(({ id }) => ({ id, unlockedAt }))] } : state, writeFailure);
     if (result.ok) {
       pending.hungerMs = 0;
       pending.idleMs = 0;
       retryUntil = 0;
       warning = undefined;
       const gameChange = afterSave?.();
-      publish({ snapshot: snapshot(), completed, ...gameChange });
+      const relationshipUnlocked = announceRelationship && unlocked.length > 0 ? unlocked.map(({ id }) => id) : undefined;
+      publish({ snapshot: snapshot(), completed, ...gameChange, relationshipUnlocked });
       schedule();
     }
     return result;
@@ -87,7 +94,9 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
 
     // 先结算活动，再计入截止点后累计的空闲恢复，记录只包含活动实际奖励。
     const completion = due ? finishDue(state, activity.id, now) : undefined;
-    const result = commit(advanceOnline(completion?.state ?? state, pending), { completed: announce ? completion?.entry : undefined });
+    const result = commit(advanceOnline(completion?.state ?? state, pending), {
+      completed: announce ? completion?.entry : undefined, announceRelationship: announce,
+    });
     if (result.ok === false) {
       warning = due ? '活动暂时无法结算，稍后会自动重试。' : result.message;
       retryUntil = performance.now() + 5000;
@@ -105,8 +114,20 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     const saved = store.snapshot();
     if (saved.ok === false) return saved;
     const change = operation(saved.state, now);
-    if (change.ok === false) return change;
+    if (change.ok === false || change.state === saved.state) return change;
     return commit(advanceOnline(change.state, pending), options);
+  }
+
+  function greetToday(): GreetingResponse {
+    const current = store.snapshot();
+    if (current.ok && current.state.lastGreetingDay === localDay()) return { ok: true, state: current.state, gained: null };
+    let gained: number | null = null;
+    const result = apply((state, now) => {
+      const next = recordGreeting(state, localDay(new Date(now)));
+      if (next !== state) gained = next.affection - state.affection;
+      return { ok: true, state: next };
+    }, { writeFailure: '问候未保存，请再点一次。' });
+    return result.ok === false ? result : { ...result, gained };
   }
 
   function startDango(owner: symbol, revision: number, mode: DangoMode = 'classic'): DangoResponse<DangoPreview> {
@@ -196,6 +217,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       { writeFailure: '存档写入失败，本次购买未完成。' }),
     claimBread: (revision: number) => apply((state) => claimBread(state, revision),
       { writeFailure: '存档写入失败，本次补给未领取。' }),
+    greetToday,
     start: (kind: ActivityKind, revision: number) => apply(
       (state, now) => startActivity(state, kind, revision, randomUUID(), now, durations[kind], Boolean(dango))),
     cancel: (id: string, revision: number) => apply((state, now) => cancelActivity(state, id, revision, now)),

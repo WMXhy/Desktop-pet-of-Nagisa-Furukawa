@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import open from './assets/idle_blink/000.png';
 import half from './assets/idle_blink/001.png';
 import shut from './assets/idle_blink/002.png';
+import close0 from './assets/idle_close/000.png';
+import close1 from './assets/idle_close/001.png';
+import close2 from './assets/idle_close/002.png';
 import wave0 from './assets/greet/000.png';
 import wave1 from './assets/greet/001.png';
 import wave2 from './assets/greet/002.png';
@@ -37,24 +40,30 @@ import { dangoEnergyCost, dangoHugFrameMs, dangoHugMs, type DangoMode } from './
 import { DangoPanel } from './dango-panel';
 import { Backpack, SnackShop } from './food-panel';
 import { foodArt, type Frame } from './food-art';
+import { RelationshipPanel } from './relationship-panel';
+import { companionThreshold, greetingLines, practiceLineMs, practiceLines, rehearsalFrameMs, relationshipRank } from './relationship';
 import { OwnedToys, ToyShop } from './toy-panel';
 import { activityRules, dangoUnavailable, dramaClubStudyPoints, specialLineStudyPoints, specialStudyLine,
   type Activity, type ActivityKind, type ActivityRecord, type CareChange, type CareResponse, type FoodId } from './care';
 import './index.css';
 
 const blink: readonly Frame[] = [[half, 80], [shut, 100], [half, 80]];
+const closeIdle: readonly Frame[] = [[close0, 350], [close1, 450], [close2, 750], [close1, 450], [close0, 350]];
 const wave: readonly Frame[] = [[wave0, 180], [wave1, 180], [wave2, 240], [wave3, 200]];
+const rehearsal: readonly Frame[] = [rehearse0, rehearse1, rehearse2, rehearse3]
+  .map((image, index) => [image, rehearsalFrameMs[index]]);
 const activityFrames: Record<ActivityKind, readonly Frame[]> = {
   rest: [[rest0, 1600], [rest1, 1600]],
   bakery: [[bakery0, 500], [bakery1, 500], [bakery2, 400], [bakery3, 1500]],
   study: [[study0, 2500], [study1, 200], [study2, 300], [study3, 1200]],
-  rehearse: [[rehearse0, 1000], [rehearse1, 400], [rehearse2, 700], [rehearse3, 1000]],
+  rehearse: rehearsal,
   work_props: [[props0, 600], [props1, 500], [props2, 500], [props3, 1400]],
 };
 const workDone: readonly Frame[] = [[workDone0, 350], [workDone1, 850]];
 const smile: readonly Frame[] = [[wave3, 1200]];
 const encourage: readonly Frame[] = [[open, 1200]];
 const hugFrames: readonly Frame[] = [hug0, hug1, hug2, hug3].map((image, index) => [image, dangoHugFrameMs[index]]);
+type PetInteraction = 'hug' | 'line';
 
 function completionMessage(completed: ActivityRecord, studyPoints: number): string {
   const previous = studyPoints - completed.actual.studyPoints;
@@ -83,11 +92,17 @@ function Pet() {
     let gameBusy = false;
     let revision = -1;
     let studyPoints = 0;
-    let specialLineNext = true;
+    let affection = 0;
+    let previousGreeting = '';
+    let greetingPending = false;
+    let nextGreetingAt = 0;
     let lastCompletion: string | undefined;
     let eating = false;
-    let hugging = false;
-    let pendingHug = false;
+    let playingClose = false;
+    let idleOpportunities = 0;
+    let activePetInteraction: PetInteraction | undefined;
+    let pendingPetInteraction: PetInteraction | undefined;
+    let practiceIndex = 0;
     const feedQueue: FoodId[] = [];
 
     function later(callback: () => void, delay: number) {
@@ -99,9 +114,9 @@ function Pet() {
       const next = frames[index];
       if (!next) {
         eating = false;
-        hugging = false;
+        activePetInteraction = undefined;
         if (feedQueue.length && !document.hidden) playNextFood();
-        else if (pendingHug && !activity && !gameBusy && !document.hidden) playHug();
+        else if (pendingPetInteraction && !activity && !gameBusy && !document.hidden) playPetInteraction(pendingPetInteraction);
         else restorePose();
         return;
       }
@@ -114,14 +129,18 @@ function Pet() {
     function restorePose() {
       window.clearTimeout(timer);
       playingInteraction = false;
-      pendingHug = false;
+      playingClose = false;
+      pendingPetInteraction = undefined;
       if (document.hidden) { setFrame(open); return; }
       if (activity) {
         play(activityFrames[activity.kind]);
         return;
       }
       setFrame(open);
-      later(() => play(blink), 3000 + Math.random() * 3000);
+      later(() => {
+        playingClose = !gameBusy && affection >= companionThreshold && ++idleOpportunities % 3 === 0;
+        play(playingClose ? closeIdle : blink);
+      }, 3000 + Math.random() * 3000);
     }
 
     function showBubble(text: string, bubbleDuration: number) {
@@ -132,6 +151,7 @@ function Pet() {
 
     function interact(frames: readonly Frame[], text: string, bubbleDuration: number) {
       playingInteraction = true;
+      playingClose = false;
       showBubble(text, bubbleDuration);
       play(frames);
     }
@@ -144,35 +164,64 @@ function Pet() {
       interact(art.frames, art.message, 2500);
     }
 
-    function playHug() {
-      pendingHug = false;
-      hugging = true;
-      interact(hugFrames, '团子玩偶软软的。', dangoHugMs);
+    function playPetInteraction(kind: PetInteraction) {
+      pendingPetInteraction = undefined;
+      activePetInteraction = kind;
+      if (kind === 'hug') interact(hugFrames, '团子玩偶软软的。', dangoHugMs);
+      else {
+        const line = practiceLines[practiceIndex];
+        practiceIndex = (practiceIndex + 1) % practiceLines.length;
+        interact(rehearsal, line, practiceLineMs);
+      }
     }
 
-    greet.current = () => {
-      if (playingInteraction || document.hidden) return;
-      if (!activity && studyPoints >= specialLineStudyPoints) {
-        const line = specialLineNext ? specialStudyLine : '今天也一起加油吧。';
-        specialLineNext = !specialLineNext;
-        interact(wave, line, 4000);
-      } else interact(wave, '今天也一起加油吧。', 4000);
-    };
+    async function requestGreeting() {
+      if (playingInteraction || document.hidden || greetingPending || performance.now() < nextGreetingAt) return;
+      greetingPending = true;
+      nextGreetingAt = performance.now() + 2000;
+      try {
+        const result = await window.pet.greetToday();
+        if (playingInteraction || document.hidden) return;
+        if (result.ok === false) {
+          interact(wave, result.message, 4000);
+          return;
+        }
+        const current = result.state.revision >= revision ? result.state : { affection, studyPoints };
+        const rank = relationshipRank(current.affection).id;
+        const lines: string[] = [...greetingLines[rank]];
+        if (!activity && current.studyPoints >= specialLineStudyPoints && result.gained === null) {
+          if (rank === 'initial') lines.unshift(specialStudyLine);
+          else lines.push(specialStudyLine);
+        }
+        const line = lines[(lines.indexOf(previousGreeting) + 1) % lines.length];
+        previousGreeting = line;
+        interact(wave, result.gained === null ? line : `${line} 好感 +${result.gained}`, 4000);
+      } catch (error) {
+        console.error('问候请求失败', error);
+        if (!document.hidden && !playingInteraction) interact(wave, '问候未保存，请再点一次。', 4000);
+      } finally { greetingPending = false; }
+    }
+
+    greet.current = () => { void requestGreeting(); };
     const unsubscribeFed = window.pet.onFed((id) => {
       if (document.hidden) return;
       feedQueue.push(id);
-      if (!eating && !hugging) playNextFood();
+      if (!eating && !activePetInteraction) playNextFood();
     });
-    const unsubscribeHug = window.pet.onHug(() => {
-      if (document.hidden || hugging || pendingHug) return;
-      if (eating) pendingHug = true;
-      else playHug();
-    });
+
+    function requestPetInteraction(kind: PetInteraction) {
+      if (document.hidden || activePetInteraction || pendingPetInteraction) return;
+      if (eating) pendingPetInteraction = kind;
+      else playPetInteraction(kind);
+    }
+    const unsubscribeHug = window.pet.onHug(() => requestPetInteraction('hug'));
+    const unsubscribeLine = window.pet.onListenToLine(() => requestPetInteraction('line'));
 
     function updateCare({ snapshot, completed, dangoStarted, dangoCompleted }: CareChange) {
       if (!snapshot.ok || snapshot.state.revision < revision) return;
       revision = snapshot.state.revision;
       studyPoints = snapshot.state.studyPoints;
+      affection = snapshot.state.affection;
       const changedActivity = activity?.id !== snapshot.state.activeActivity?.id;
       activity = snapshot.state.activeActivity;
       gameBusy = snapshot.gameBusy;
@@ -198,7 +247,7 @@ function Pet() {
         } else interact(encourage, '刚刚差一点，再看一次吧。', 2500);
       } else if (dangoStarted === 'lines' && !document.hidden) {
         interact(activityFrames.rehearse, '下一句交给你了。', 2600);
-      } else if (changedActivity && !playingInteraction) restorePose();
+      } else if ((changedActivity || (gameBusy && playingClose)) && !playingInteraction) restorePose();
     }
     const unsubscribeCare = window.pet.onCareChanged(updateCare);
 
@@ -212,7 +261,7 @@ function Pet() {
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
       eating = false;
-      hugging = false;
+      activePetInteraction = undefined;
       feedQueue.length = 0;
       setBubble('');
       restorePose();
@@ -226,6 +275,7 @@ function Pet() {
       greet.current = undefined;
       unsubscribeFed();
       unsubscribeHug();
+      unsubscribeLine();
       unsubscribeCare();
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
@@ -272,8 +322,8 @@ function Pet() {
   );
 }
 
-const journalTabs = { journal: '手账', snacks: '零食店', toys: '玩具店' } as const;
-const journalTabIds = ['journal', 'snacks', 'toys'] as const;
+const journalTabs = { journal: '手账', snacks: '零食店', toys: '玩具店', relationship: '关系' } as const;
+const journalTabIds = ['journal', 'snacks', 'toys', 'relationship'] as const;
 
 function Journal() {
   const { care, setCare, loadCare } = useCareSnapshot();
@@ -338,7 +388,8 @@ function Journal() {
     notice && h('p', { className: 'care-notice' }, notice),
     care.warning && h('p', { className: 'care-notice', role: 'status' }, care.warning),
     page === 'snacks' ? h(SnackShop, { state, gameBusy, busy, submit })
-      : page === 'toys' ? h(ToyShop, { state, gameBusy, busy, submit, openGame }) : h('div', null,
+      : page === 'toys' ? h(ToyShop, { state, gameBusy, busy, submit, openGame })
+      : page === 'relationship' ? h(RelationshipPanel, { state, gameBusy, busy, submit }) : h('div', null,
       h('section', { className: 'journal-game', 'aria-labelledby': 'minigames-heading' },
         h('div', null, h('h2', { id: 'minigames-heading' }, '小游戏'),
           h('p', { id: 'dango-entry-detail' }, gameReason ?? `每局消耗 ${dangoEnergyCost} 精力。`)),

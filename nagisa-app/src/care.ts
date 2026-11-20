@@ -1,6 +1,7 @@
 import { dangoEnergyCost, type DangoMode, type DangoResult } from './dango';
+import { affectionLimit, dailyAffectionLimit, milestones, trustThreshold, type MilestoneId, type RelationshipRecord } from './relationship';
 
-export const careVersion = 5;
+export const careVersion = 6;
 export const hungerInterval = 600_000;
 export const idleInterval = 300_000;
 export const activityLogLimit = 20;
@@ -116,13 +117,22 @@ export type CareV4 = CareFields & V4ActivityFields & {
   inventory: V3Inventory;
   studyPoints: number;
 };
-export type LegacyCare = CareV1 | CareV2 | CareV3 | CareV4;
-export type Care = Omit<CareV4, 'version'> & { version: typeof careVersion; ownedToys: Record<ToyId, boolean> };
+export type CareV5 = Omit<CareV4, 'version'> & { version: 5; ownedToys: { dangoPlush: boolean; miniStage: boolean } };
+export type LegacyCare = CareV1 | CareV2 | CareV3 | CareV4 | CareV5;
+export type Care = Omit<CareV5, 'version'> & {
+  version: typeof careVersion;
+  lastGreetingDay: string | null;
+  relationshipLog: RelationshipRecord[];
+};
 
 export function upgradeCare(state: LegacyCare): Care {
-  const version = careVersion;
+  const relationshipLog = milestones.filter((milestone) => state.affection >= milestone.min)
+    .map<RelationshipRecord>(({ id }) => ({ id, unlockedAt: null }));
+  const relationship: Pick<Care, 'version' | 'lastGreetingDay' | 'relationshipLog'> =
+    { version: careVersion, lastGreetingDay: null, relationshipLog };
+  if (state.version === 5) return { ...state, ...relationship };
   const ownedToys = { dangoPlush: false, miniStage: false };
-  if (state.version === 4) return { ...state, version, ownedToys };
+  if (state.version === 4) return { ...state, ...relationship, ownedToys };
   const activities: V4ActivityFields = state.version === 1
     ? { activeActivity: null, activityLog: [], online: { hungerMs: 0, idleMs: 0 } }
     : {
@@ -130,7 +140,7 @@ export function upgradeCare(state: LegacyCare): Care {
       activityLog: state.activityLog.map((entry) => ({ ...entry, actual: { ...entry.actual, studyPoints: 0 } })),
       online: state.online,
     };
-  return { ...state, ...activities, version, ownedToys, studyPoints: 0,
+  return { ...state, ...activities, ...relationship, ownedToys, studyPoints: 0,
     inventory: state.version === 3 ? state.inventory : { bread: state.inventory.bread, redBeanBread: 0, dangoSnack: 0 } };
 }
 
@@ -141,11 +151,18 @@ export function newCare(day = localDay()): Care {
 type CareUnavailable = { ok: false; message: string };
 export type CareReadResult = { ok: true; state: Care; notice?: string } | CareUnavailable;
 export type CareSnapshot = CareReadResult & { durations: ActivityDurations; gameBusy: boolean; warning?: string };
-export type CareChange = { snapshot: CareSnapshot; completed?: ActivityRecord; dangoStarted?: DangoMode; dangoCompleted?: DangoResult };
+export type CareChange = {
+  snapshot: CareSnapshot;
+  completed?: ActivityRecord;
+  dangoStarted?: DangoMode;
+  dangoCompleted?: DangoResult;
+  relationshipUnlocked?: MilestoneId[];
+};
 export type CareResult =
   | { ok: true; state: Care }
   | { ok: false; state: Care; message: string };
 export type CareResponse = CareResult | (CareUnavailable & { state?: never });
+export type GreetingResponse = { ok: true; state: Care; gained: number | null } | Extract<CareResponse, { ok: false }>;
 
 export function foodUnavailable(state: Care, id: FoodId, gameBusy = false): string | undefined {
   if (gameBusy) return '小游戏结束后可喂食。';
@@ -155,10 +172,25 @@ export function foodUnavailable(state: Care, id: FoodId, gameBusy = false): stri
   if (state.revision === Number.MAX_SAFE_INTEGER) return '存档已达到可记录的操作次数上限。';
 }
 
+export function affectionGainedToday(state: Care, day = localDay()): number {
+  return state.daily.day === day ? state.daily.gained : 0;
+}
+
 function gainAffection(state: Care, amount: number, day: string) {
-  const gained = state.daily.day === day ? state.daily.gained : 0;
-  const add = Math.min(amount, 12 - gained, 300 - state.affection);
+  const gained = affectionGainedToday(state, day);
+  const add = Math.min(amount, dailyAffectionLimit - gained, affectionLimit - state.affection);
   return { affection: state.affection + add, daily: { day, gained: gained + add } };
+}
+
+export function greetToday(state: Care, day = localDay()): Care {
+  if (state.lastGreetingDay === day) return state;
+  return { ...state, ...gainAffection(state, 1, day), lastGreetingDay: day };
+}
+
+export function practiceLineUnavailable(state: Care, gameBusy: boolean): string | undefined {
+  if (state.affection < trustThreshold) return `好感达到 ${trustThreshold} 后可以听渚练台词。`;
+  if (gameBusy) return '小游戏结束后可以听渚练台词。';
+  if (state.activeActivity) return '活动结束后可以听渚练台词。';
 }
 
 export function dangoModeUnavailable(state: Care, mode: DangoMode): string | undefined {

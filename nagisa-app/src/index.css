@@ -255,6 +255,84 @@ body,
   margin-top: 8px;
 }
 
+.relationship-overview {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f6e7d7;
+}
+
+.relationship h2,
+.relationship h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.relationship h3 {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.relationship p {
+  margin: 2px 0 0;
+}
+
+.relationship-today,
+.relationship-actions p,
+.relationship-log li > p {
+  color: #6f5446;
+  font-size: 12px;
+}
+
+.relationship-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.relationship-actions p {
+  width: 100%;
+}
+
+.relationship-log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.relationship-log li {
+  padding: 8px 0;
+  border-top: 1px solid #e7d5c5;
+}
+
+.relationship-log summary {
+  cursor: pointer;
+}
+
+.relationship-dialogue {
+  display: grid;
+  gap: 5px;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #f6e7d7;
+}
+
+.relationship-dialogue div {
+  display: grid;
+  grid-template-columns: 1.2em minmax(0, 1fr);
+  gap: 6px;
+}
+
+.relationship-dialogue dt {
+  font-weight: 600;
+}
+
+.relationship-dialogue dd {
+  margin: 0;
+}
+
 .journal-game {
   display: flex;
   align-items: center;
