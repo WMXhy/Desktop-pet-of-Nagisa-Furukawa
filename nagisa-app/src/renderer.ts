@@ -7,12 +7,6 @@ import wave0 from './assets/greet/000.png';
 import wave1 from './assets/greet/001.png';
 import wave2 from './assets/greet/002.png';
 import wave3 from './assets/greet/003.png';
-import eat0 from './assets/eat/000.png';
-import eat1 from './assets/eat/001.png';
-import eat2 from './assets/eat/002.png';
-import eat3 from './assets/eat/003.png';
-import eat4 from './assets/eat/004.png';
-import bread from './assets/items/bread.png';
 import rest0 from './assets/rest/000.png';
 import rest1 from './assets/rest/001.png';
 import bakery0 from './assets/work_bakery/000.png';
@@ -22,13 +16,13 @@ import bakery3 from './assets/work_bakery/003.png';
 import workDone0 from './assets/work_done/000.png';
 import workDone1 from './assets/work_done/001.png';
 import { ActivityPanel } from './activity-panel';
-import { breadUnavailable, fullnessAfterBread, type Activity, type CareChange, type CareResponse, type CareSnapshot } from './care';
+import { Backpack, SnackShop } from './food-panel';
+import { foodArt, type Frame } from './food-art';
+import type { Activity, CareChange, CareResponse, CareSnapshot, FoodId } from './care';
 import './index.css';
 
-type Frame = readonly [image: string, duration: number];
 const blink: readonly Frame[] = [[half, 80], [shut, 100], [half, 80]];
 const wave: readonly Frame[] = [[wave0, 180], [wave1, 180], [wave2, 240], [wave3, 200]];
-const eat: readonly Frame[] = [[eat0, 180], [eat1, 240], [eat2, 220], [eat3, 500], [eat4, 360]];
 const rest: readonly Frame[] = [[rest0, 1600], [rest1, 1600]];
 const bakery: readonly Frame[] = [[bakery0, 500], [bakery1, 500], [bakery2, 400], [bakery3, 1500]];
 const workDone: readonly Frame[] = [[workDone0, 350], [workDone1, 850]];
@@ -46,6 +40,8 @@ function Pet() {
     let activity: Activity | null = null;
     let revision = -1;
     let lastCompletion: string | undefined;
+    let eating = false;
+    const feedQueue: FoodId[] = [];
 
     function later(callback: () => void, delay: number) {
       window.clearTimeout(timer);
@@ -55,7 +51,9 @@ function Pet() {
     function play(frames: readonly Frame[], index = 0, onFrame?: (index: number) => void) {
       const next = frames[index];
       if (!next) {
-        restorePose();
+        eating = false;
+        if (feedQueue.length && !document.hidden) playNextFood();
+        else restorePose();
         return;
       }
       const [image, duration] = next;
@@ -88,11 +86,21 @@ function Pet() {
       play(frames);
     }
 
+    function playNextFood() {
+      const id = feedQueue.shift();
+      if (!id) return;
+      eating = true;
+      const art = foodArt[id];
+      interact(art.frames, art.message, 2500);
+    }
+
     greet.current = () => {
       if (!playingInteraction && !document.hidden) interact(wave, '今天也一起加油吧。', 4000);
     };
-    const unsubscribeFed = window.pet.onFed(() => {
-      if (!document.hidden) interact(eat, '面包好香，谢谢你。', 2500);
+    const unsubscribeFed = window.pet.onFed((id) => {
+      if (document.hidden) return;
+      feedQueue.push(id);
+      if (!eating) playNextFood();
     });
 
     function updateCare({ snapshot, completed }: CareChange) {
@@ -121,6 +129,8 @@ function Pet() {
     function onVisibilityChange() {
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
+      eating = false;
+      feedQueue.length = 0;
       setBubble('');
       restorePose();
       if (!document.hidden) readCare();
@@ -182,6 +192,7 @@ function Journal() {
   const [care, setCare] = useState<CareSnapshot>();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [shopOpen, setShopOpen] = useState(false);
   const requesting = useRef(false);
 
   function updateSnapshot(snapshot: CareSnapshot) {
@@ -205,7 +216,7 @@ function Journal() {
     return unsubscribe;
   }, []);
 
-  async function submit(request: () => Promise<CareResponse>, message: string) {
+  async function submit(request: () => Promise<CareResponse>, message: string, onSuccess?: () => void) {
     if (!care?.ok || requesting.current) return;
     requesting.current = true;
     setBusy(true);
@@ -216,6 +227,7 @@ function Journal() {
       if (state) setCare((previous) => previous?.ok && state.revision >= previous.state.revision
         ? { ...previous, state } : previous);
       setFeedback(result.ok === false ? result.message : message);
+      if (result.ok) onSuccess?.();
     } catch (error) {
       console.error('手账无法确认操作结果', error);
       await loadCare();
@@ -235,7 +247,6 @@ function Journal() {
   }
 
   const { state, notice } = care;
-  const unavailable = breadUnavailable(state);
   const stats: [string, number][] = [
     ['团子币', state.coins], ['饱食', state.fullness], ['精力', state.energy],
     ['心情', state.mood], ['好感', state.affection],
@@ -245,22 +256,17 @@ function Journal() {
     h('dl', { className: 'care-stats' }, stats.map(([label, value]) =>
       h('div', { key: label }, h('dt', null, label), h('dd', null, value)),
     )),
-    h('section', { className: 'backpack', 'aria-labelledby': 'backpack-heading' },
-      h('h2', { id: 'backpack-heading' }, '背包'),
-      h('div', { className: 'bread-row' },
-        h('img', { src: bread, alt: '', width: 48, height: 48 }),
-        h('div', { className: 'bread-description' },
-          h('strong', null, `小面包 × ${state.inventory.bread}`),
-          h('p', { id: 'bread-effect' }, unavailable ?? `饱食 ${state.fullness} → ${fullnessAfterBread(state.fullness)}`),
-        ),
-        h('button', { type: 'button', disabled: busy || Boolean(unavailable), 'aria-describedby': 'bread-effect',
-          onClick: () => { void submit(() => window.pet.feedBread(state.revision), '已喂一个小面包。'); } }, '喂给渚'),
-      ),
+    h('nav', { className: 'journal-nav', 'aria-label': '手账页面' },
+      h('button', { type: 'button', 'aria-pressed': !shopOpen, onClick: () => setShopOpen(false) }, '手账'),
+      h('button', { type: 'button', 'aria-pressed': shopOpen, onClick: () => setShopOpen(true) }, '零食店'),
     ),
     h('p', { className: 'care-feedback', role: 'status' }, feedback),
     notice && h('p', { className: 'care-notice' }, notice),
     care.warning && h('p', { className: 'care-notice', role: 'status' }, care.warning),
-    h(ActivityPanel, { state, durations: care.durations, busy, submit }),
+    shopOpen ? h(SnackShop, { state, busy, submit }) : h('div', null,
+      h(Backpack, { state, busy, submit }),
+      h(ActivityPanel, { state, durations: care.durations, busy, submit }),
+    ),
   );
 }
 

@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { powerMonitor } from 'electron';
 import { createCareStore } from './care-store';
-import { activityRules, advanceOnline, cancelActivity, feedBread, finishDue, hungerInterval, idleInterval, localDay, startActivity,
-  type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult,
+import { activityRules, advanceOnline, buyFood, cancelActivity, claimBread, feedFood, finishDue, hungerInterval, idleInterval, localDay, startActivity,
+  type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult, type FoodId,
   type CareSnapshot, type OnlineTime } from './care';
 
 export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
@@ -47,8 +47,8 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       : elapsed;
   }
 
-  function commit(state: Care, completed?: ActivityRecord): CareResponse {
-    const result = store.commit(state);
+  function commit(state: Care, completed?: ActivityRecord, writeFailure?: string): CareResponse {
+    const result = store.commit(state, writeFailure);
     if (result.ok) {
       pending.hungerMs = 0;
       pending.idleMs = 0;
@@ -87,7 +87,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     return result;
   }
 
-  function apply(operation: (state: Care, now: number) => CareResult): CareResponse {
+  function apply(operation: (state: Care, now: number) => CareResult, writeFailure?: string): CareResponse {
     const now = Date.now();
     const advancement = advance(now, { retry: true });
     if (advancement?.ok === false) return advancement;
@@ -95,7 +95,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     if (saved.ok === false) return saved;
     const change = operation(saved.state, now);
     if (change.ok === false) return change;
-    return commit(advanceOnline(change.state, pending));
+    return commit(advanceOnline(change.state, pending), undefined, writeFailure);
   }
 
   function suspend() {
@@ -125,7 +125,9 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       if (recovered) schedule();
       return snapshot();
     },
-    feed: (revision: number) => apply((state, now) => feedBread(state, revision, localDay(new Date(now)))),
+    feed: (id: FoodId, revision: number) => apply((state, now) => feedFood(state, id, revision, localDay(new Date(now))), '存档写入失败，食物已保留。'),
+    buy: (id: FoodId, quantity: number, revision: number) => apply((state) => buyFood(state, id, quantity, revision), '存档写入失败，本次购买未完成。'),
+    claimBread: (revision: number) => apply((state) => claimBread(state, revision), '存档写入失败，本次补给未领取。'),
     start: (kind: ActivityKind, revision: number) => apply((state, now) => startActivity(state, kind, revision, randomUUID(), now, durations[kind])),
     cancel: (id: string, revision: number) => apply((state, now) => cancelActivity(state, id, revision, now)),
     close() {

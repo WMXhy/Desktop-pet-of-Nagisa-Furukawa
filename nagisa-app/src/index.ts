@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type Point } from 
 import { mkdirSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import appIcon from './assets/app-icon.png';
-import { isActivityKind } from './care';
+import { isActivityKind, isFoodId, type FoodId } from './care';
 import { createCareRuntime } from './care-runtime';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
@@ -140,15 +140,36 @@ async function startPet(): Promise<void> {
       if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的手账请求');
       return care.read();
     });
+    function feed(id: FoodId, revision: number) {
+      const result = care.feed(id, revision);
+      if (result.ok && !petWindow.isDestroyed() && petWindow.isVisible()) {
+        contents.send('care:fed', id);
+      }
+      return result;
+    }
     journalContents.ipc.handle('care:feed', (event, revision: number) => {
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的喂食请求');
       }
-      const result = care.feed(revision);
-      if (result.ok && !petWindow.isDestroyed() && petWindow.isVisible()) {
-        contents.send('care:fed');
+      return feed('bread', revision);
+    });
+    journalContents.ipc.handle('care:feed-food', (event, id: unknown, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || !isFoodId(id) ||
+          !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的喂食请求');
+      return feed(id, revision);
+    });
+    journalContents.ipc.handle('care:buy', (event, id: unknown, quantity: number, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || !isFoodId(id) ||
+          !Number.isSafeInteger(quantity) || quantity < 1 || !Number.isSafeInteger(revision) || revision < 0) {
+        throw new Error('无效的购买请求');
       }
-      return result;
+      return care.buy(id, quantity, revision);
+    });
+    journalContents.ipc.handle('care:claim-bread', (event, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
+        throw new Error('无效的补给请求');
+      }
+      return care.claimBread(revision);
     });
     journalContents.ipc.handle('care:start', (event, kind: unknown, revision: number) => {
       if (event.senderFrame !== journalContents.mainFrame || !isActivityKind(kind) ||

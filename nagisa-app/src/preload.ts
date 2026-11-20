@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('pet', {
   cancel: () => ipcRenderer.send('pet:cancel'),
   readCare: () => ipcRenderer.invoke('care:read'),
   feedBread: (revision) => ipcRenderer.invoke('care:feed', revision),
+  feedFood: (id, revision) => ipcRenderer.invoke('care:feed-food', id, revision),
+  buyFood: (id, quantity, revision) => ipcRenderer.invoke('care:buy', id, quantity, revision),
+  claimBread: (revision) => ipcRenderer.invoke('care:claim-bread', revision),
   startActivity: (kind, revision) => ipcRenderer.invoke('care:start', kind, revision),
   cancelActivity: (id, revision) => ipcRenderer.invoke('care:cancel', id, revision),
   onCareChanged: (callback) => {
@@ -15,7 +18,7 @@ contextBridge.exposeInMainWorld('pet', {
     return () => { ipcRenderer.removeListener('care:changed', listener); };
   },
   onFed: (callback) => {
-    const listener = () => callback();
+    const listener = (_event: Electron.IpcRendererEvent, id: import('./care').FoodId) => callback(id);
     ipcRenderer.on('care:fed', listener);
     return () => { ipcRenderer.removeListener('care:fed', listener); };
   },

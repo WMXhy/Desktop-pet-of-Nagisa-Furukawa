@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { activityLogLimit, careVersion, hungerInterval, idleInterval, isActivityKind, newCare, upgradeCare,
-  type Care, type CareV1, type CareReadResult, type CareResponse } from './care';
+import { activityLogLimit, careVersion, foodIds, hungerInterval, idleInterval, isActivityKind, newCare, upgradeCare,
+  type Care, type CareV1, type CareV2, type CareReadResult, type CareResponse } from './care';
 
-type SaveFile = { kind: 'valid'; state: Care; original?: CareV1 } | { kind: 'missing' | 'invalid' | 'newer' };
+type SaveFile = { kind: 'valid'; state: Care; original?: CareV1 | CareV2 } | { kind: 'missing' | 'invalid' | 'newer' };
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -58,7 +58,16 @@ function readSave(file: string): SaveFile {
           const original = data as CareV1;
           return { kind: 'valid', state: upgradeCare(original), original };
         }
-        if (data.version === careVersion && validV2Fields(data)) return { kind: 'valid', state: data as Care };
+        if (validV2Fields(data)) {
+          if (data.version === 2) {
+            const original = data as CareV2;
+            return { kind: 'valid', state: upgradeCare(original), original };
+          }
+          const inventory = data.inventory;
+          if (data.version === careVersion && record(inventory) && foodIds.every((id) => integer(inventory[id]))) {
+            return { kind: 'valid', state: data as Care };
+          }
+        }
       }
     }
   } catch (error) {
@@ -68,7 +77,7 @@ function readSave(file: string): SaveFile {
   return { kind: 'invalid' };
 }
 
-function writeSave(file: string, state: Care | CareV1): void {
+function writeSave(file: string, state: Care | CareV1 | CareV2): void {
   const temporaryFile = `${file}.tmp`;
   writeFileSync(temporaryFile, JSON.stringify(state), { encoding: 'utf8', flush: true });
   renameSync(temporaryFile, file);
@@ -120,7 +129,7 @@ export function createCareStore(directory: string) {
       if (!current.ok) current = load();
       return current;
     },
-    commit(candidate: Care): CareResponse {
+    commit(candidate: Care, writeFailure = '存档写入失败，请重试。'): CareResponse {
       if (!current.ok) return current;
       if (current.state.revision === Number.MAX_SAFE_INTEGER) {
         return { ok: false, state: current.state, message: '存档已达到可记录的操作次数上限。' };
@@ -131,7 +140,7 @@ export function createCareStore(directory: string) {
         writeSave(mainFile, state);
       } catch (error) {
         console.warn('养成存档无法提交', error);
-        return { ok: false, state: current.state, message: '存档写入失败，请重试。' };
+        return { ok: false, state: current.state, message: writeFailure };
       }
       current = { ...current, state };
       return { ok: true, state };

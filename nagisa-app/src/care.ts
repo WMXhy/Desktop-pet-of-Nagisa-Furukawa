@@ -1,7 +1,19 @@
-export const careVersion = 2;
+export const careVersion = 3;
 export const hungerInterval = 600_000;
 export const idleInterval = 300_000;
 export const activityLogLimit = 20;
+
+export const foods = {
+  bread: { name: '小面包', price: 6, fullness: 18, mood: 0, affection: 1 },
+  redBeanBread: { name: '红豆面包', price: 12, fullness: 24, mood: 3, affection: 2 },
+  dangoSnack: { name: '团子点心', price: 10, fullness: 12, mood: 6, affection: 2 },
+} as const;
+export type FoodId = keyof typeof foods;
+export const foodIds: readonly FoodId[] = ['bread', 'redBeanBread', 'dangoSnack'];
+
+export function isFoodId(value: unknown): value is FoodId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(foods, value);
+}
 
 export type ActivityKind = 'rest' | 'bakery';
 export type Reward = { coins: number; energy: number; mood: number; affection: number };
@@ -42,24 +54,30 @@ function initialCareFields(day: string) {
     mood: 60,
     affection: 0,
     daily: { day, gained: 0 },
-    inventory: { bread: 2 },
   };
 }
 
-export type CareV1 = ReturnType<typeof initialCareFields> & { version: 1 };
-export type Care = ReturnType<typeof initialCareFields> & {
-  version: typeof careVersion;
+type CareFields = ReturnType<typeof initialCareFields>;
+type ActivityFields = {
   activeActivity: Activity | null;
   activityLog: ActivityRecord[];
   online: OnlineTime;
 };
+type LegacyInventory = { bread: number };
+export type CareV1 = CareFields & { version: 1; inventory: LegacyInventory };
+export type CareV2 = CareFields & ActivityFields & { version: 2; inventory: LegacyInventory };
+export type Care = CareFields & ActivityFields & { version: typeof careVersion; inventory: Record<FoodId, number> };
 
-export function upgradeCare(state: ReturnType<typeof initialCareFields>): Care {
-  return { ...state, version: careVersion, activeActivity: null, activityLog: [], online: { hungerMs: 0, idleMs: 0 } };
+export function upgradeCare(state: CareV1 | CareV2): Care {
+  const activities: ActivityFields = state.version === 2 ? {
+    activeActivity: state.activeActivity, activityLog: state.activityLog, online: state.online,
+  } : { activeActivity: null, activityLog: [], online: { hungerMs: 0, idleMs: 0 } };
+  return { ...state, ...activities, version: careVersion,
+    inventory: { bread: state.inventory.bread, redBeanBread: 0, dangoSnack: 0 } };
 }
 
 export function newCare(day = localDay()): Care {
-  return upgradeCare(initialCareFields(day));
+  return upgradeCare({ ...initialCareFields(day), version: 1, inventory: { bread: 2 } });
 }
 
 type CareUnavailable = { ok: false; message: string };
@@ -71,13 +89,9 @@ export type CareResult =
   | { ok: false; state: Care; message: string };
 export type CareResponse = CareResult | (CareUnavailable & { state?: never });
 
-export function fullnessAfterBread(fullness: number): number {
-  return Math.min(100, fullness + 18);
-}
-
-export function breadUnavailable(state: Care): string | undefined {
+export function foodUnavailable(state: Care, id: FoodId): string | undefined {
   if (state.activeActivity) return '活动结束后可喂食。';
-  if (state.inventory.bread < 1) return '背包里的小面包吃完了。';
+  if (state.inventory[id] < 1) return `背包里的${foods[id].name}吃完了。`;
   if (state.fullness >= 100) return '渚已经吃饱了。';
   if (state.revision === Number.MAX_SAFE_INTEGER) return '存档已达到可记录的操作次数上限。';
 }
@@ -88,20 +102,53 @@ function gainAffection(state: Care, amount: number, day: string) {
   return { affection: state.affection + add, daily: { day, gained: gained + add } };
 }
 
-export function feedBread(state: Care, revision: number, day = localDay()): CareResult {
+export function previewFood(state: Care, id: FoodId, day = localDay()) {
+  const food = foods[id];
+  return {
+    ...gainAffection(state, food.affection, day),
+    fullness: Math.min(100, state.fullness + food.fullness),
+    mood: Math.min(100, state.mood + food.mood),
+  };
+}
+
+export function feedFood(state: Care, id: FoodId, revision: number, day = localDay()): CareResult {
   if (revision !== state.revision) return { ok: false, state, message: '库存已更新，请再看一眼。' };
-  const unavailable = breadUnavailable(state);
+  const unavailable = foodUnavailable(state, id);
   if (unavailable) return { ok: false, state, message: unavailable };
 
   return {
     ok: true,
     state: {
       ...state,
-      ...gainAffection(state, 1, day),
-      fullness: fullnessAfterBread(state.fullness),
-      inventory: { ...state.inventory, bread: state.inventory.bread - 1 },
+      ...previewFood(state, id, day),
+      inventory: { ...state.inventory, [id]: state.inventory[id] - 1 },
     },
   };
+}
+
+export function purchaseUnavailable(state: Care, id: FoodId, quantity: number): string | undefined {
+  if (!Number.isSafeInteger(quantity) || quantity < 1) return '请输入正整数数量。';
+  const total = foods[id].price * quantity;
+  if (!Number.isSafeInteger(total) || total > state.coins) return '团子币不足。';
+  if (!Number.isSafeInteger(state.inventory[id] + quantity)) return '库存已达到上限。';
+}
+
+export function buyFood(state: Care, id: FoodId, quantity: number, revision: number): CareResult {
+  if (revision !== state.revision) return { ok: false, state, message: '余额或库存已更新，请重新确认。' };
+  const unavailable = purchaseUnavailable(state, id, quantity);
+  if (unavailable) return { ok: false, state, message: unavailable };
+  return { ok: true, state: { ...state, coins: state.coins - foods[id].price * quantity,
+    inventory: { ...state.inventory, [id]: state.inventory[id] + quantity } } };
+}
+
+export function canClaimBread(state: Care): boolean {
+  return state.fullness < 15 && state.coins < foods.bread.price && foodIds.every((id) => state.inventory[id] === 0);
+}
+
+export function claimBread(state: Care, revision: number): CareResult {
+  if (revision !== state.revision) return { ok: false, state, message: '养成状态已更新，请再看一眼。' };
+  if (!canClaimBread(state)) return { ok: false, state, message: '当前不符合应急补给条件。' };
+  return { ok: true, state: { ...state, inventory: { ...state.inventory, bread: 1 } } };
 }
 
 export function activityUnavailable(state: Care, kind: ActivityKind): string | undefined {

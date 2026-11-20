@@ -173,3 +173,82 @@ body,
   color: #6f5446;
   font-size: 12px;
 }
+
+.journal-nav {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.journal-nav button[aria-pressed='false'] {
+  background: #f6e7d7;
+  color: #6f5446;
+}
+
+.journal-nav button[aria-pressed='true'] {
+  font-weight: 600;
+}
+
+.shop-product,
+.shop-receipt {
+  padding: 10px;
+  margin: 0 0 8px;
+  border: 1px solid #e7d5c5;
+  border-radius: 10px;
+}
+
+.shop-receipt {
+  background: #f6e7d7;
+}
+
+.shop-product-summary,
+.shop-purchase {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.shop-product-summary h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.shop-product p,
+.shop-receipt p {
+  margin: 2px 0;
+}
+
+.shop-product p,
+#quick-feed-reason {
+  color: #6f5446;
+  font-size: 12px;
+}
+
+.shop-receipt button {
+  margin: 4px 0;
+}
+
+.shop-purchase {
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.shop-purchase input {
+  box-sizing: border-box;
+  width: 62px;
+  margin-left: 6px;
+  padding: 4px;
+  border: 1px solid #cbb5a4;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  background: #fffaf4;
+}
+
+.shop-product .shop-quote {
+  text-align: right;
+}
+
+.emergency-bread {
+  margin-top: 8px;
+}
