@@ -1,10 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { powerMonitor } from 'electron';
 import { createCareStore } from './care-store';
-import { activityDurations, advanceOnline, buyFood, cancelActivity, claimBread, feedFood, finishDue, hungerInterval, idleInterval, localDay, startActivity,
+import { activityDurations, advanceOnline, buyFood, cancelActivity, claimBread, dangoUnavailable, feedFood, finishDango, finishDue,
+  hungerInterval, idleInterval, localDay, startActivity,
   type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult, type FoodId,
   type CareSnapshot, type OnlineTime } from './care';
+import { dangoCoverMs, dangoEnergyCost, dangoPreviewMs, dangoSlots,
+  type DangoPreview, type DangoResponse, type DangoResult, type DangoSlot } from './dango';
+
+type DangoSession = DangoPreview & { owner: symbol; chooseAt: number; picked?: DangoSlot };
+type CommitOptions = { completed?: ActivityRecord; writeFailure?: string; afterSave?: () => DangoResult | void };
 
 export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
   const store = createCareStore(directory);
@@ -16,9 +22,11 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
   let retryUntil = 0;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let warning: string | undefined;
+  let dango: DangoSession | undefined;
+  let lastDango: { owner: symbol; result: DangoResult } | undefined;
 
   function snapshot(): CareSnapshot {
-    return { ...store.snapshot(), durations, warning };
+    return { ...store.snapshot(), durations, gameBusy: Boolean(dango), warning };
   }
 
   function schedule() {
@@ -40,20 +48,22 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     lastSample = next;
     if (!state || suspended) return;
     pending.hungerMs += elapsed;
+    if (dango) return;
     // 跨过截止点的采样段，只有截止点之后才算空闲。
     pending.idleMs += state.activeActivity
       ? Math.min(elapsed, Math.max(0, now - state.activeActivity.endsAt))
       : elapsed;
   }
 
-  function commit(state: Care, completed?: ActivityRecord, writeFailure?: string): CareResponse {
+  function commit(state: Care, { completed, writeFailure, afterSave }: CommitOptions = {}): CareResponse {
     const result = store.commit(state, writeFailure);
     if (result.ok) {
       pending.hungerMs = 0;
       pending.idleMs = 0;
       retryUntil = 0;
       warning = undefined;
-      publish({ snapshot: snapshot(), completed });
+      const dangoCompleted = afterSave?.() || undefined;
+      publish({ snapshot: snapshot(), completed, dangoCompleted });
       schedule();
     }
     return result;
@@ -75,7 +85,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
 
     // 先结算活动，再计入截止点后累计的空闲恢复，记录只包含活动实际奖励。
     const completion = due ? finishDue(state, activity.id, now) : undefined;
-    const result = commit(advanceOnline(completion?.state ?? state, pending), announce ? completion?.entry : undefined);
+    const result = commit(advanceOnline(completion?.state ?? state, pending), { completed: announce ? completion?.entry : undefined });
     if (result.ok === false) {
       warning = due ? '活动暂时无法结算，稍后会自动重试。' : result.message;
       retryUntil = performance.now() + 5000;
@@ -86,7 +96,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     return result;
   }
 
-  function apply(operation: (state: Care, now: number) => CareResult, writeFailure?: string): CareResponse {
+  function apply(operation: (state: Care, now: number) => CareResult, options?: CommitOptions): CareResponse {
     const now = Date.now();
     const advancement = advance(now, { retry: true });
     if (advancement?.ok === false) return advancement;
@@ -94,7 +104,52 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     if (saved.ok === false) return saved;
     const change = operation(saved.state, now);
     if (change.ok === false) return change;
-    return commit(advanceOnline(change.state, pending), undefined, writeFailure);
+    return commit(advanceOnline(change.state, pending), options);
+  }
+
+  function startDango(owner: symbol, revision: number): DangoResponse<DangoPreview> {
+    const round = { id: randomUUID(), target: dangoSlots[randomInt(dangoSlots.length)] };
+    const saved = apply((state) => {
+      if (state.revision !== revision) return { ok: false, state, message: '状态已更新，请再试一次。' };
+      const unavailable = dangoUnavailable(state, Boolean(dango));
+      if (unavailable) return { ok: false, state, message: unavailable };
+      return { ok: true, state: { ...state, energy: state.energy - dangoEnergyCost } };
+    }, {
+      writeFailure: '开局存档失败，精力已保留。请重试。',
+      afterSave: () => { dango = { ...round, owner, chooseAt: performance.now() + dangoPreviewMs + dangoCoverMs }; },
+    });
+    return saved.ok === false ? { ok: false, message: saved.message } : { ok: true, round };
+  }
+
+  function pickDango(owner: symbol, id: string, picked: DangoSlot): DangoResponse<DangoResult> {
+    if (lastDango?.owner === owner && lastDango.result.id === id) return { ok: true, round: lastDango.result };
+    const round = dango;
+    if (!round || round.id !== id || round.owner !== owner) return { ok: false, message: '这局猜团子已结束。' };
+    if (performance.now() < round.chooseAt) return { ok: false, message: '等小碗盖好后再选。' };
+    if (round.picked !== undefined && round.picked !== picked) return { ok: false, message: '请重试刚才选的位置。' };
+    round.picked = picked;
+    const correct = picked === round.target;
+    let result: DangoResult;
+    const saved = apply((state, now) => {
+      const { state: next, actual } = finishDango(state, correct, localDay(new Date(now)));
+      result = { id, target: round.target, picked, correct, actual };
+      return { ok: true, state: next };
+    }, {
+      writeFailure: '作答无法保存，请重试刚才选的位置。',
+      afterSave: () => {
+        dango = undefined;
+        lastDango = { owner, result };
+        return result;
+      },
+    });
+    return saved.ok === false ? { ok: false, message: saved.message } : { ok: true, round: result };
+  }
+
+  function leaveDango(owner: symbol, id: string) {
+    if (dango?.owner !== owner || dango.id !== id || stopped) return;
+    advance(Date.now());
+    dango = undefined;
+    publish({ snapshot: snapshot() });
   }
 
   function suspend() {
@@ -124,11 +179,19 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       if (recovered) schedule();
       return snapshot();
     },
-    feed: (id: FoodId, revision: number) => apply((state, now) => feedFood(state, id, revision, localDay(new Date(now))), '存档写入失败，食物已保留。'),
-    buy: (id: FoodId, quantity: number, revision: number) => apply((state) => buyFood(state, id, quantity, revision), '存档写入失败，本次购买未完成。'),
-    claimBread: (revision: number) => apply((state) => claimBread(state, revision), '存档写入失败，本次补给未领取。'),
-    start: (kind: ActivityKind, revision: number) => apply((state, now) => startActivity(state, kind, revision, randomUUID(), now, durations[kind])),
+    feed: (id: FoodId, revision: number) => apply(
+      (state, now) => feedFood(state, id, revision, localDay(new Date(now)), Boolean(dango)),
+      { writeFailure: '存档写入失败，食物已保留。' }),
+    buy: (id: FoodId, quantity: number, revision: number) => apply((state) => buyFood(state, id, quantity, revision),
+      { writeFailure: '存档写入失败，本次购买未完成。' }),
+    claimBread: (revision: number) => apply((state) => claimBread(state, revision),
+      { writeFailure: '存档写入失败，本次补给未领取。' }),
+    start: (kind: ActivityKind, revision: number) => apply(
+      (state, now) => startActivity(state, kind, revision, randomUUID(), now, durations[kind], Boolean(dango))),
     cancel: (id: string, revision: number) => apply((state, now) => cancelActivity(state, id, revision, now)),
+    startDango,
+    pickDango,
+    leaveDango,
     close() {
       stopped = true;
       clearInterval(tick);
@@ -136,6 +199,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       powerMonitor.off('suspend', suspend);
       powerMonitor.off('resume', resume);
       advance(Date.now(), { force: true, announce: false, retry: true });
+      dango = undefined;
     },
   };
 }

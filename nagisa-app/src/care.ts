@@ -1,3 +1,5 @@
+import { dangoEnergyCost, type DangoResult } from './dango';
+
 export const careVersion = 4;
 export const hungerInterval = 600_000;
 export const idleInterval = 300_000;
@@ -118,14 +120,15 @@ export function newCare(day = localDay()): Care {
 
 type CareUnavailable = { ok: false; message: string };
 export type CareReadResult = { ok: true; state: Care; notice?: string } | CareUnavailable;
-export type CareSnapshot = CareReadResult & { durations: ActivityDurations; warning?: string };
-export type CareChange = { snapshot: CareSnapshot; completed?: ActivityRecord };
+export type CareSnapshot = CareReadResult & { durations: ActivityDurations; gameBusy: boolean; warning?: string };
+export type CareChange = { snapshot: CareSnapshot; completed?: ActivityRecord; dangoCompleted?: DangoResult };
 export type CareResult =
   | { ok: true; state: Care }
   | { ok: false; state: Care; message: string };
 export type CareResponse = CareResult | (CareUnavailable & { state?: never });
 
-export function foodUnavailable(state: Care, id: FoodId): string | undefined {
+export function foodUnavailable(state: Care, id: FoodId, gameBusy = false): string | undefined {
+  if (gameBusy) return '猜团子结束后可喂食。';
   if (state.activeActivity) return '活动结束后可喂食。';
   if (state.inventory[id] < 1) return `背包里的${foods[id].name}吃完了。`;
   if (state.fullness >= 100) return '渚已经吃饱了。';
@@ -138,6 +141,19 @@ function gainAffection(state: Care, amount: number, day: string) {
   return { affection: state.affection + add, daily: { day, gained: gained + add } };
 }
 
+export function dangoUnavailable(state: Care, gameBusy: boolean): string | undefined {
+  if (gameBusy) return '渚正在玩猜团子。';
+  if (state.activeActivity) return '活动结束后可以玩猜团子。';
+  if (state.energy < dangoEnergyCost) return `精力不足，需要至少 ${dangoEnergyCost} 点。`;
+}
+
+export function finishDango(state: Care, correct: boolean, day = localDay()) {
+  const mood = Math.min(100, state.mood + (correct ? 5 : 3));
+  const affection = gainAffection(state, 1, day);
+  return { state: { ...state, ...affection, mood },
+    actual: { mood: mood - state.mood, affection: affection.affection - state.affection } };
+}
+
 export function previewFood(state: Care, id: FoodId, day = localDay()) {
   const food = foods[id];
   return {
@@ -147,9 +163,9 @@ export function previewFood(state: Care, id: FoodId, day = localDay()) {
   };
 }
 
-export function feedFood(state: Care, id: FoodId, revision: number, day = localDay()): CareResult {
+export function feedFood(state: Care, id: FoodId, revision: number, day = localDay(), gameBusy = false): CareResult {
   if (revision !== state.revision) return { ok: false, state, message: '库存已更新，请再看一眼。' };
-  const unavailable = foodUnavailable(state, id);
+  const unavailable = foodUnavailable(state, id, gameBusy);
   if (unavailable) return { ok: false, state, message: unavailable };
 
   return {
@@ -187,17 +203,19 @@ export function claimBread(state: Care, revision: number): CareResult {
   return { ok: true, state: { ...state, inventory: { ...state.inventory, bread: 1 } } };
 }
 
-export function activityUnavailable(state: Care, kind: ActivityKind): string | undefined {
+export function activityUnavailable(state: Care, kind: ActivityKind, gameBusy = false): string | undefined {
   const rule = activityRules[kind];
+  if (gameBusy) return '猜团子结束后可以开始活动。';
   if (state.activeActivity) return '渚正在活动中。';
   if (state.studyPoints < rule.minStudy) return `还差 ${rule.minStudy - state.studyPoints} 学习点。`;
   if (state.fullness < rule.minFullness) return `饱食不足，需要至少 ${rule.minFullness} 点。`;
   if (state.energy < rule.cost) return `精力不足，需要至少 ${rule.cost} 点。`;
 }
 
-export function startActivity(state: Care, kind: ActivityKind, revision: number, id: string, now: number, duration: number): CareResult {
+export function startActivity(state: Care, kind: ActivityKind, revision: number, id: string, now: number, duration: number,
+  gameBusy = false): CareResult {
   if (revision !== state.revision) return { ok: false, state, message: '状态已更新，请再看一眼。' };
-  const unavailable = activityUnavailable(state, kind);
+  const unavailable = activityUnavailable(state, kind, gameBusy);
   if (unavailable) return { ok: false, state, message: unavailable };
   const { cost, reward } = activityRules[kind];
   return { ok: true, state: { ...state, energy: state.energy - cost,

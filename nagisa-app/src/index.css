@@ -254,3 +254,182 @@ body,
 .emergency-bread {
   margin-top: 8px;
 }
+
+.journal-game {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #e7d5c5;
+}
+
+.journal-game h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.journal-game p {
+  margin: 2px 0 0;
+  color: #6f5446;
+  font-size: 12px;
+}
+
+.dango-panel {
+  --background: #fff8ed;
+  --ink: #50392e;
+  --muted: #6f5446;
+  --card: #fcf0de;
+  --line: #d9bd9f;
+  --accent: #804a34;
+  --on-accent: #fff8ed;
+  --target: #4e673b;
+  --alert: #8c3833;
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--background);
+  color: var(--ink);
+  font: 13px/1.4 "Microsoft YaHei", sans-serif;
+}
+
+.dango-panel header,
+.dango-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.dango-panel h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.dango-energy {
+  padding: 2px 7px;
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 12px;
+}
+
+.dango-instruction {
+  margin: 5px 0 7px;
+}
+
+.dango-slots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dango-panel button {
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dango-panel button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dango-panel button:disabled {
+  cursor: default;
+}
+
+.dango-slot {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 2px;
+  min-height: 90px;
+  padding: 2px 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.dango-slot:hover:not(:disabled),
+.dango-slot[data-picked] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.dango-slot[data-target] {
+  color: var(--target);
+  font-weight: 700;
+}
+
+.dango-art,
+.dango-art img {
+  display: block;
+  width: 64px;
+  max-width: 100%;
+  height: 64px;
+  object-fit: contain;
+}
+
+.dango-slot-label {
+  font-size: 11px;
+}
+
+.dango-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.dango-actions button {
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.dango-actions .dango-exit,
+.dango-actions button:disabled {
+  border-color: var(--line);
+  background: var(--card);
+  color: var(--muted);
+}
+
+.dango-message {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dango-message[role='alert'] {
+  color: var(--alert);
+}
+
+.dango-cover {
+  animation: dango-cover 300ms ease-out;
+}
+
+@keyframes dango-cover {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dango-cover { animation: none; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .dango-panel {
+    --background: #2b211d;
+    --ink: #f8e9d8;
+    --muted: #e2c6ab;
+    --card: #3b2c25;
+    --line: #80634f;
+    --accent: #efb68b;
+    --on-accent: #36231a;
+    --target: #bcdaa5;
+    --alert: #ffb7ad;
+  }
+}

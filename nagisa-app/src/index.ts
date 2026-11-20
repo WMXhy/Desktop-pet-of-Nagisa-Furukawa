@@ -1,9 +1,10 @@
-import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type Point } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type IpcMainInvokeEvent, type Point } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import appIcon from './assets/app-icon.png';
 import { isActivityKind, isFoodId, type FoodId } from './care';
 import { createCareRuntime } from './care-runtime';
+import { isDangoSlot } from './dango';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -18,6 +19,7 @@ let tray: Tray;
 async function startPet(): Promise<void> {
   const icon = nativeImage.createFromDataURL(appIcon);
   const { x, y } = restorePosition(size);
+  const webPreferences = { preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY, contextIsolation: true, nodeIntegration: false, sandbox: true };
   const petWindow = new BrowserWindow({
     title,
     icon,
@@ -32,12 +34,7 @@ async function startPet(): Promise<void> {
     resizable: false,
     skipTaskbar: true,
     show: false,
-    webPreferences: {
-      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences,
   });
 
   let pendingSave: ReturnType<typeof setTimeout> | undefined;
@@ -103,15 +100,94 @@ async function startPet(): Promise<void> {
   }
 
   let journal: BrowserWindow | undefined;
+  let game: BrowserWindow | undefined;
   const care = createCareRuntime(app.getPath('userData'), !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1', (change) => {
-    if (!contents.isDestroyed() && contents.getURL()) contents.send('care:changed', change);
-    if (journal && !journal.isDestroyed()) journal.webContents.send('care:changed', change);
+    for (const window of [petWindow, journal, game]) {
+      if (!window || window.isDestroyed()) continue;
+      const page = window.webContents;
+      if (!page.isCrashed() && page.getURL()) page.send('care:changed', change);
+    }
   });
   app.once('before-quit', () => care.close());
   ipc.handle('care:read', (event) => {
     if (event.senderFrame !== contents.mainFrame) throw new Error('无效的角色请求');
     return care.read();
   });
+
+  function openDangoGame() {
+    if (game && !game.isDestroyed()) {
+      if (game.isMinimized()) game.restore();
+      if (game.isVisible()) game.focus();
+      return;
+    }
+
+    const pet = petWindow.getBounds();
+    const area = screen.getDisplayMatching(pet).workArea;
+    const width = Math.min(320, area.width);
+    const height = Math.min(270, area.height);
+    const right = pet.x + pet.width + 8;
+    const maxX = area.x + area.width - width;
+    const side = right <= maxX ? right : pet.x - width - 8;
+    const window = new BrowserWindow({
+      title: '猜团子', icon, width, height, show: false, autoHideMenuBar: true, webPreferences,
+      x: Math.max(area.x, Math.min(side, maxX)),
+      y: Math.max(area.y, Math.min(pet.y, area.y + area.height - height)),
+    });
+    game = window;
+    const page = window.webContents;
+    let owner = Symbol();
+    let ownedRoundId: string | undefined;
+
+    function release() {
+      if (ownedRoundId) care.leaveDango(owner, ownedRoundId);
+      ownedRoundId = undefined;
+      owner = Symbol();
+    }
+
+    function checkSender(event: IpcMainInvokeEvent) {
+      if (event.sender !== page || !event.senderFrame || event.senderFrame !== page.mainFrame ||
+          !event.senderFrame.url.endsWith('#dango-game')) throw new Error('无效的猜团子请求');
+    }
+
+    page.ipc.handle('care:read', (event) => {
+      checkSender(event);
+      return care.read();
+    });
+    page.ipc.handle('dango:start', (event, revision: unknown) => {
+      checkSender(event);
+      if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的开局请求');
+      if (page.isLoadingMainFrame()) return { ok: false, message: '面板正在加载，请稍后重试。' };
+      const result = care.startDango(owner, revision);
+      if (result.ok) ownedRoundId = result.round.id;
+      return result;
+    });
+    page.ipc.handle('dango:pick', (event, id: unknown, slot: unknown) => {
+      checkSender(event);
+      if (typeof id !== 'string' || !id.trim() || !isDangoSlot(slot)) throw new Error('无效的作答请求');
+      return care.pickDango(owner, id, slot);
+    });
+    page.ipc.handle('dango:leave', (event, id: unknown) => {
+      checkSender(event);
+      if (typeof id !== 'string' || !id.trim()) throw new Error('无效的退出请求');
+      if (ownedRoundId !== id) return;
+      care.leaveDango(owner, id);
+      ownedRoundId = undefined;
+    });
+    page.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+      if (isMainFrame && !isSameDocument) release();
+    });
+    page.on('render-process-gone', () => { if (!window.isDestroyed()) window.destroy(); });
+    window.on('closed', () => {
+      if (game === window) game = undefined;
+      release();
+    });
+    window.once('ready-to-show', () => window.show());
+    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#dango-game`).catch((error) => {
+      if (window.isDestroyed()) return;
+      console.error('猜团子面板无法打开', error);
+      window.close();
+    });
+  }
 
   function openJournal() {
     if (journal && !journal.isDestroyed()) {
@@ -127,18 +203,19 @@ async function startPet(): Promise<void> {
       height: 480,
       show: false,
       autoHideMenuBar: true,
-      webPreferences: {
-        preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
-        sandbox: true,
-        nodeIntegration: false,
-        contextIsolation: true,
-      },
+      webPreferences,
     });
     journal = window;
     const journalContents = window.webContents;
     journalContents.ipc.handle('care:read', (event) => {
       if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的手账请求');
       return care.read();
+    });
+    journalContents.ipc.handle('dango:open', (event) => {
+      if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame) {
+        throw new Error('无效的手账请求');
+      }
+      openDangoGame();
     });
     function feed(id: FoodId, revision: number) {
       const result = care.feed(id, revision);
@@ -238,6 +315,7 @@ async function startPet(): Promise<void> {
   petWindow.on('closed', () => {
     screen.off('display-removed', recoverAfterDisplayRemoval);
     if (journal && !journal.isDestroyed()) journal.close();
+    if (game && !game.isDestroyed()) game.close();
   });
 
   await petWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);

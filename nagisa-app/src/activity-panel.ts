@@ -31,8 +31,8 @@ function cancellationMessage({ kind, reward }: Activity): string {
   return `现在结束${label}吗？${spent}${forfeited}`;
 }
 
-export function ActivityPanel({ state, durations, busy, submit }: {
-  state: Care; durations: ActivityDurations; busy: boolean; submit: Submit;
+export function ActivityPanel({ state, durations, gameBusy, busy, submit }: {
+  state: Care; durations: ActivityDurations; gameBusy: boolean; busy: boolean; submit: Submit;
 }) {
   const [confirmation, setConfirmation] = useState<{ activity: Activity; revision: number }>();
   const [, tick] = useState(0);
@@ -45,7 +45,7 @@ export function ActivityPanel({ state, durations, busy, submit }: {
   }, [activity?.id]);
 
   function activityOption(kind: ActivityKind) {
-    const unavailable = activityUnavailable(state, kind);
+    const unavailable = activityUnavailable(state, kind, gameBusy);
     const { label, cost, reward } = activityRules[kind];
     const description = kind === 'rest' ? `预计恢复 ${Math.min(reward.energy, 100 - state.energy)} 点精力`
       : `消耗 ${cost} 精力，完成后${rewards(reward, true)}`;

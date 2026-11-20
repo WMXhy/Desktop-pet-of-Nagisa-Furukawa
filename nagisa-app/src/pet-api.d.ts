@@ -11,6 +11,10 @@ interface Window {
     claimBread(revision: number): Promise<import('./care').CareResponse>;
     startActivity(kind: import('./care').ActivityKind, revision: number): Promise<import('./care').CareResponse>;
     cancelActivity(id: string, revision: number): Promise<import('./care').CareResponse>;
+    openDangoGame(): Promise<void>;
+    startDango(revision: number): Promise<import('./dango').DangoResponse<import('./dango').DangoPreview>>;
+    pickDango(id: string, slot: import('./dango').DangoSlot): Promise<import('./dango').DangoResponse<import('./dango').DangoResult>>;
+    leaveDango(id: string): Promise<void>;
     onCareChanged(callback: (change: import('./care').CareChange) => void): () => void;
     onFed(callback: (id: import('./care').FoodId) => void): () => void;
   };

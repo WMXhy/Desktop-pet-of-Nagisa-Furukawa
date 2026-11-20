@@ -28,10 +28,13 @@ import props1 from './assets/work_props/001.png';
 import props2 from './assets/work_props/002.png';
 import props3 from './assets/work_props/003.png';
 import { ActivityPanel } from './activity-panel';
+import { useCareSnapshot } from './care-snapshot';
+import { dangoEnergyCost } from './dango';
+import { DangoPanel } from './dango-panel';
 import { Backpack, SnackShop } from './food-panel';
 import { foodArt, type Frame } from './food-art';
-import { activityDurations, activityRules, dramaClubStudyPoints, specialLineStudyPoints, specialStudyLine,
-  type Activity, type ActivityKind, type ActivityRecord, type CareChange, type CareResponse, type CareSnapshot, type FoodId } from './care';
+import { activityRules, dangoUnavailable, dramaClubStudyPoints, specialLineStudyPoints, specialStudyLine,
+  type Activity, type ActivityKind, type ActivityRecord, type CareChange, type CareResponse, type FoodId } from './care';
 import './index.css';
 
 const blink: readonly Frame[] = [[half, 80], [shut, 100], [half, 80]];
@@ -45,6 +48,7 @@ const activityFrames: Record<ActivityKind, readonly Frame[]> = {
 };
 const workDone: readonly Frame[] = [[workDone0, 350], [workDone1, 850]];
 const smile: readonly Frame[] = [[wave3, 1200]];
+const encourage: readonly Frame[] = [[open, 1200]];
 
 function completionMessage(completed: ActivityRecord, studyPoints: number): string {
   const previous = studyPoints - completed.actual.studyPoints;
@@ -142,7 +146,7 @@ function Pet() {
       if (!eating) playNextFood();
     });
 
-    function updateCare({ snapshot, completed }: CareChange) {
+    function updateCare({ snapshot, completed, dangoCompleted }: CareChange) {
       if (!snapshot.ok || snapshot.state.revision < revision) return;
       revision = snapshot.state.revision;
       studyPoints = snapshot.state.studyPoints;
@@ -159,6 +163,11 @@ function Pet() {
             if (index === 1) showBubble(text, 2500);
           });
         } else interact(completed.kind === 'work_props' ? [activityFrames.work_props[3]] : smile, text, 2500);
+      } else if (dangoCompleted && dangoCompleted.id !== lastCompletion) {
+        lastCompletion = dangoCompleted.id;
+        if (document.hidden) return;
+        if (dangoCompleted.correct) interact(smile, '猜中了！就是这颗团子。', 2500);
+        else interact(encourage, '刚刚差一点，再看一次吧。', 2500);
       } else if (changedActivity && !playingInteraction) restorePose();
     }
     const unsubscribeCare = window.pet.onCareChanged(updateCare);
@@ -232,32 +241,11 @@ function Pet() {
 }
 
 function Journal() {
-  const [care, setCare] = useState<CareSnapshot>();
+  const { care, setCare, loadCare } = useCareSnapshot();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [shopOpen, setShopOpen] = useState(false);
   const requesting = useRef(false);
-
-  function updateSnapshot(snapshot: CareSnapshot) {
-    setCare((previous) => previous?.ok && (!snapshot.ok || snapshot.state.revision < previous.state.revision)
-      ? previous : snapshot);
-  }
-
-  async function loadCare() {
-    try {
-      updateSnapshot(await window.pet.readCare());
-    } catch (error) {
-      console.error('手账无法读取养成状态', error);
-      setCare((previous) => previous?.ok ? previous : { ok: false, message: '手账暂时无法读取养成状态，请重试。',
-        durations: activityDurations() });
-    }
-  }
-
-  useEffect(() => {
-    const unsubscribe = window.pet.onCareChanged(({ snapshot }) => updateSnapshot(snapshot));
-    void loadCare();
-    return unsubscribe;
-  }, []);
 
   async function submit(request: () => Promise<CareResponse>, message: string, onSuccess?: () => void) {
     if (!care?.ok || requesting.current) return;
@@ -289,7 +277,8 @@ function Journal() {
     );
   }
 
-  const { state, notice } = care;
+  const { state, notice, gameBusy } = care;
+  const gameReason = dangoUnavailable(state, gameBusy);
   const stats: [string, number][] = [
     ['团子币', state.coins], ['饱食', state.fullness], ['精力', state.energy],
     ['心情', state.mood], ['好感', state.affection], ['学习点', state.studyPoints],
@@ -306,9 +295,21 @@ function Journal() {
     h('p', { className: 'care-feedback', role: 'status' }, feedback),
     notice && h('p', { className: 'care-notice' }, notice),
     care.warning && h('p', { className: 'care-notice', role: 'status' }, care.warning),
-    shopOpen ? h(SnackShop, { state, busy, submit }) : h('div', null,
-      h(Backpack, { state, busy, submit }),
-      h(ActivityPanel, { state, durations: care.durations, busy, submit }),
+    shopOpen ? h(SnackShop, { state, gameBusy, busy, submit }) : h('div', null,
+      h('section', { className: 'journal-game', 'aria-labelledby': 'minigames-heading' },
+        h('div', null, h('h2', { id: 'minigames-heading' }, '小游戏'),
+          h('p', { id: 'dango-entry-detail' }, gameReason ?? `每局消耗 ${dangoEnergyCost} 精力。`)),
+        h('button', { type: 'button', disabled: !gameBusy && Boolean(gameReason), 'aria-describedby': 'dango-entry-detail',
+          onClick: () => {
+            void window.pet.openDangoGame().catch((error) => {
+              console.error('无法打开猜团子', error);
+              setFeedback('暂时无法打开猜团子，请重试。');
+            });
+          },
+        }, '和渚玩猜团子'),
+      ),
+      h(Backpack, { state, gameBusy, busy, submit }),
+      h(ActivityPanel, { state, durations: care.durations, gameBusy, busy, submit }),
     ),
   );
 }
@@ -317,5 +318,7 @@ const container = document.getElementById('root');
 if (!container) throw new Error('页面缺少 root 容器');
 
 const journalPage = window.location.hash === '#journal';
+const dangoPage = window.location.hash === '#dango-game';
 if (journalPage) document.title = '渚的手账';
-createRoot(container).render(journalPage ? h(Journal) : h(Pet));
+if (dangoPage) document.title = '猜团子';
+createRoot(container).render(dangoPage ? h(DangoPanel) : journalPage ? h(Journal) : h(Pet));

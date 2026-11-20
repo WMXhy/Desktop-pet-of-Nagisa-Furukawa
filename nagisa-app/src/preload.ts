@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('pet', {
   claimBread: (revision) => ipcRenderer.invoke('care:claim-bread', revision),
   startActivity: (kind, revision) => ipcRenderer.invoke('care:start', kind, revision),
   cancelActivity: (id, revision) => ipcRenderer.invoke('care:cancel', id, revision),
+  openDangoGame: () => ipcRenderer.invoke('dango:open'),
+  startDango: (revision) => ipcRenderer.invoke('dango:start', revision),
+  pickDango: (id, slot) => ipcRenderer.invoke('dango:pick', id, slot),
+  leaveDango: (id) => ipcRenderer.invoke('dango:leave', id),
   onCareChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, change: import('./care').CareChange) => callback(change);
     ipcRenderer.on('care:changed', listener);

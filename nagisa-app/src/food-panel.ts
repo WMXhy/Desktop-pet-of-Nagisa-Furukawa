@@ -4,7 +4,7 @@ import { canClaimBread, foodIds, foods, foodUnavailable, previewFood, purchaseUn
 import { foodArt } from './food-art';
 
 type Submit = (request: () => Promise<CareResponse>, message: string, onSuccess?: () => void) => Promise<void>;
-type Props = { state: Care; busy: boolean; submit: Submit };
+type Props = { state: Care; gameBusy: boolean; busy: boolean; submit: Submit };
 
 function effects(id: FoodId): string {
   const { fullness, mood, affection } = foods[id];
@@ -22,12 +22,12 @@ function feed(state: Care, id: FoodId, submit: Submit, onSuccess?: () => void) {
   return submit(() => window.pet.feedFood(id, state.revision), `已喂一个${foods[id].name}。`, onSuccess);
 }
 
-export function Backpack({ state, busy, submit }: Props) {
+export function Backpack({ state, gameBusy, busy, submit }: Props) {
   const stocked = foodIds.filter((id) => id === 'bread' || state.inventory[id] > 0);
   return h('section', { className: 'backpack', 'aria-labelledby': 'backpack-heading' },
     h('h2', { id: 'backpack-heading' }, '背包'),
     stocked.map((id) => {
-      const unavailable = foodUnavailable(state, id);
+      const unavailable = foodUnavailable(state, id, gameBusy);
       const detailId = id === 'bread' ? 'bread-effect' : `effect-${id}`;
       return h('div', { className: 'bread-row', key: id },
         h('img', { src: foodArt[id].icon, alt: '', width: 48, height: 48 }),
@@ -45,11 +45,11 @@ export function Backpack({ state, busy, submit }: Props) {
   );
 }
 
-export function SnackShop({ state, busy, submit }: Props) {
+export function SnackShop({ state, gameBusy, busy, submit }: Props) {
   const [quantities, setQuantities] = useState<Record<FoodId, string>>({ bread: '1', redBeanBread: '1', dangoSnack: '1' });
   const [purchase, setPurchase] = useState<{ id: FoodId; quantity: number }>();
   const receipt = useRef<HTMLDivElement>(null);
-  const feedReason = purchase && foodUnavailable(state, purchase.id);
+  const feedReason = purchase && foodUnavailable(state, purchase.id, gameBusy);
   useEffect(() => {
     if (purchase) receipt.current?.scrollIntoView({ block: 'nearest' });
   }, [purchase]);
