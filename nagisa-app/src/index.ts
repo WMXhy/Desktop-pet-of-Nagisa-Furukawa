@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type Point } from 'electron';
 import appIcon from './assets/app-icon.png';
+import { createCareStore } from './care-store';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -12,6 +13,7 @@ const maxCoordinate = 0x7fffffff;
 let tray: Tray;
 
 async function startPet(): Promise<void> {
+  const care = createCareStore(app.getPath('userData'));
   const icon = nativeImage.createFromDataURL(appIcon);
   const { x, y } = restorePosition(size);
   const petWindow = new BrowserWindow({
@@ -113,9 +115,29 @@ async function startPet(): Promise<void> {
       height: 320,
       show: false,
       autoHideMenuBar: true,
-      webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
+      webPreferences: {
+        preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+        sandbox: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
     });
     journal = window;
+    const journalContents = window.webContents;
+    journalContents.ipc.handle('care:read', (event) => {
+      if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的手账请求');
+      return care.read();
+    });
+    journalContents.ipc.handle('care:feed', (event, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
+        throw new Error('无效的喂食请求');
+      }
+      const result = care.feed(revision);
+      if (result.ok && !petWindow.isDestroyed() && petWindow.isVisible()) {
+        contents.send('care:fed');
+      }
+      return result;
+    });
     window.once('ready-to-show', () => window.show());
     window.on('closed', () => {
       if (journal === window) journal = undefined;
@@ -180,10 +202,14 @@ async function startPet(): Promise<void> {
   refreshMenu();
 }
 
-app.whenReady().then(startPet).catch((error) => {
-  console.error('桌宠启动失败', error);
+if (app.requestSingleInstanceLock()) {
+  app.whenReady().then(startPet).catch((error) => {
+    console.error('桌宠启动失败', error);
+    app.quit();
+  });
+} else {
   app.quit();
-});
+}
 
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => tray?.destroy());

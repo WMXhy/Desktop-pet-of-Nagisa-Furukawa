@@ -42,13 +42,78 @@ body,
   box-sizing: border-box;
   height: 100%;
   overflow: auto;
-  padding: 24px;
+  padding: 16px 20px;
   background: #fff8ed;
   color: #50392e;
-  font: 16px/1.6 "Microsoft YaHei", sans-serif;
+  font: 14px/1.5 "Microsoft YaHei", sans-serif;
 }
 
 .journal h1 {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   font-size: 24px;
+}
+
+.care-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: #f6e7d7;
+  text-align: center;
+}
+
+.care-stats dt,
+.bread-description p {
+  font-size: 12px;
+}
+
+.care-stats dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.backpack h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.bread-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bread-description {
+  flex: 1;
+}
+
+.bread-description p,
+.care-feedback,
+.care-notice {
+  margin: 2px 0 0;
+}
+
+.care-feedback:not(:empty),
+.care-notice {
+  margin-top: 6px;
+}
+
+.journal button {
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: #804a34;
+  color: #fff8ed;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.journal button:disabled {
+  background: #eee1d4;
+  color: #6f5446;
+  cursor: default;
 }
