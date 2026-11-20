@@ -2,15 +2,17 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { powerMonitor } from 'electron';
 import { createCareStore } from './care-store';
-import { activityDurations, advanceOnline, buyFood, cancelActivity, claimBread, dangoUnavailable, feedFood, finishDango, finishDue,
+import { activityDurations, advanceOnline, buyFood, buyToy, cancelActivity, claimBread, dangoUnavailable, feedFood, finishDango, finishDue,
   hungerInterval, idleInterval, localDay, startActivity,
   type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult, type FoodId,
-  type CareSnapshot, type OnlineTime } from './care';
+  type CareSnapshot, type OnlineTime, type ToyId } from './care';
 import { dangoCoverMs, dangoEnergyCost, dangoPreviewMs, dangoSlots,
-  type DangoPreview, type DangoResponse, type DangoResult, type DangoSlot } from './dango';
+  type DangoMode, type DangoPreview, type DangoResponse, type DangoResult, type DangoSlot } from './dango';
+import { drawDangoLines } from './dango-lines';
 
-type DangoSession = DangoPreview & { owner: symbol; chooseAt: number; picked?: DangoSlot };
-type CommitOptions = { completed?: ActivityRecord; writeFailure?: string; afterSave?: () => DangoResult | void };
+type DangoSession = { preview: DangoPreview; target: DangoSlot; owner: symbol; chooseAt: number; picked?: DangoSlot };
+type CommitOptions = { completed?: ActivityRecord; writeFailure?: string;
+  afterSave?: () => Pick<CareChange, 'dangoStarted' | 'dangoCompleted'> | void };
 
 export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
   const store = createCareStore(directory);
@@ -62,8 +64,8 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       pending.idleMs = 0;
       retryUntil = 0;
       warning = undefined;
-      const dangoCompleted = afterSave?.() || undefined;
-      publish({ snapshot: snapshot(), completed, dangoCompleted });
+      const gameChange = afterSave?.();
+      publish({ snapshot: snapshot(), completed, ...gameChange });
       schedule();
     }
     return result;
@@ -107,46 +109,52 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     return commit(advanceOnline(change.state, pending), options);
   }
 
-  function startDango(owner: symbol, revision: number): DangoResponse<DangoPreview> {
-    const round = { id: randomUUID(), target: dangoSlots[randomInt(dangoSlots.length)] };
+  function startDango(owner: symbol, revision: number, mode: DangoMode = 'classic'): DangoResponse<DangoPreview> {
+    const id = randomUUID();
+    const target = dangoSlots[randomInt(dangoSlots.length)];
+    const board = mode === 'lines' ? drawDangoLines(id) : { preview: { id, mode, target }, target };
     const saved = apply((state) => {
       if (state.revision !== revision) return { ok: false, state, message: '状态已更新，请再试一次。' };
-      const unavailable = dangoUnavailable(state, Boolean(dango));
+      const unavailable = dangoUnavailable(state, Boolean(dango), mode);
       if (unavailable) return { ok: false, state, message: unavailable };
       return { ok: true, state: { ...state, energy: state.energy - dangoEnergyCost } };
     }, {
       writeFailure: '开局存档失败，精力已保留。请重试。',
-      afterSave: () => { dango = { ...round, owner, chooseAt: performance.now() + dangoPreviewMs + dangoCoverMs }; },
+      afterSave: () => {
+        const delay = mode === 'lines' ? 0 : dangoPreviewMs + dangoCoverMs;
+        dango = { ...board, owner, chooseAt: performance.now() + delay };
+        return { dangoStarted: mode };
+      },
     });
-    return saved.ok === false ? { ok: false, message: saved.message } : { ok: true, round };
+    return saved.ok === false ? { ok: false, message: saved.message } : { ok: true, round: board.preview };
   }
 
   function pickDango(owner: symbol, id: string, picked: DangoSlot): DangoResponse<DangoResult> {
     if (lastDango?.owner === owner && lastDango.result.id === id) return { ok: true, round: lastDango.result };
     const round = dango;
-    if (!round || round.id !== id || round.owner !== owner) return { ok: false, message: '这局猜团子已结束。' };
+    if (!round || round.preview.id !== id || round.owner !== owner) return { ok: false, message: '这局小游戏已结束。' };
     if (performance.now() < round.chooseAt) return { ok: false, message: '等小碗盖好后再选。' };
-    if (round.picked !== undefined && round.picked !== picked) return { ok: false, message: '请重试刚才选的位置。' };
+    if (round.picked !== undefined && round.picked !== picked) return { ok: false, message: '请重试刚才的选择。' };
     round.picked = picked;
     const correct = picked === round.target;
     let result: DangoResult;
     const saved = apply((state, now) => {
       const { state: next, actual } = finishDango(state, correct, localDay(new Date(now)));
-      result = { id, target: round.target, picked, correct, actual };
+      result = { ...round.preview, target: round.target, picked, correct, actual };
       return { ok: true, state: next };
     }, {
-      writeFailure: '作答无法保存，请重试刚才选的位置。',
+      writeFailure: '作答无法保存，请重试刚才的选择。',
       afterSave: () => {
         dango = undefined;
         lastDango = { owner, result };
-        return result;
+        return { dangoCompleted: result };
       },
     });
     return saved.ok === false ? { ok: false, message: saved.message } : { ok: true, round: result };
   }
 
   function leaveDango(owner: symbol, id: string) {
-    if (dango?.owner !== owner || dango.id !== id || stopped) return;
+    if (dango?.owner !== owner || dango.preview.id !== id || stopped) return;
     advance(Date.now());
     dango = undefined;
     publish({ snapshot: snapshot() });
@@ -183,6 +191,8 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
       (state, now) => feedFood(state, id, revision, localDay(new Date(now)), Boolean(dango)),
       { writeFailure: '存档写入失败，食物已保留。' }),
     buy: (id: FoodId, quantity: number, revision: number) => apply((state) => buyFood(state, id, quantity, revision),
+      { writeFailure: '存档写入失败，本次购买未完成。' }),
+    buyToy: (id: ToyId, revision: number) => apply((state) => buyToy(state, id, revision),
       { writeFailure: '存档写入失败，本次购买未完成。' }),
     claimBread: (revision: number) => apply((state) => claimBread(state, revision),
       { writeFailure: '存档写入失败，本次补给未领取。' }),

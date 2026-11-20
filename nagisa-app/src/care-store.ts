@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { activityLogLimit, careVersion, foodIds, hungerInterval, idleInterval, isActivityKind, newCare, upgradeCare,
-  type Care, type LegacyCare, type CareReadResult, type CareResponse } from './care';
+import { activityLogLimit, careVersion, hungerInterval, idleInterval, newCare, toyIds, upgradeCare,
+  type Care, type CareV4, type LegacyCare, type CareReadResult, type CareResponse } from './care';
 
 type SaveFile = { kind: 'valid'; state: Care; original?: LegacyCare } | { kind: 'missing' | 'invalid' | 'newer' };
 
@@ -32,7 +32,7 @@ function validLegacyReward(value: unknown): boolean {
     integer(value.affection, 300);
 }
 
-function validReward(value: unknown): boolean {
+function validV4Reward(value: unknown): boolean {
   return record(value) && validLegacyReward(value) && integer(value.studyPoints);
 }
 
@@ -40,9 +40,13 @@ function isLegacyActivityKind(value: unknown): boolean {
   return value === 'rest' || value === 'bakery';
 }
 
+function isV4ActivityKind(value: unknown): boolean {
+  return isLegacyActivityKind(value) || value === 'study' || value === 'rehearse' || value === 'work_props';
+}
+
 function validActivityFields(data: Record<string, unknown>, legacy: boolean): boolean {
-  const validKind = legacy ? isLegacyActivityKind : isActivityKind;
-  const reward = legacy ? validLegacyReward : validReward;
+  const validKind = legacy ? isLegacyActivityKind : isV4ActivityKind;
+  const reward = legacy ? validLegacyReward : validV4Reward;
   const active = data.activeActivity;
 
   function activityIdentity(value: Record<string, unknown>): boolean {
@@ -63,16 +67,21 @@ function readSave(file: string): SaveFile {
     if (record(data)) {
       if (integer(data.version) && data.version > careVersion) return { kind: 'newer' };
       if (validCommonFields(data)) {
-        const { version, inventory } = data;
-        const hasLegacyActivities = version === 2 || (version === 3 && record(inventory) &&
-          integer(inventory.redBeanBread) && integer(inventory.dangoSnack));
+        const { version, inventory, ownedToys } = data;
+        const fullInventory = record(inventory) && integer(inventory.redBeanBread) && integer(inventory.dangoSnack);
+        const hasLegacyActivities = version === 2 || (version === 3 && fullInventory);
         if (version === 1 || (hasLegacyActivities && validActivityFields(data, true))) {
           const original = data as LegacyCare;
           return { kind: 'valid', state: upgradeCare(original), original };
         }
-        if (version === careVersion && integer(data.studyPoints) && record(inventory) &&
-            foodIds.every((id) => integer(inventory[id])) && validActivityFields(data, false)) {
-          return { kind: 'valid', state: data as Care };
+        if ((version === 4 || version === careVersion) && fullInventory && integer(data.studyPoints) && validActivityFields(data, false)) {
+          if (version === 4) {
+            const original = data as CareV4;
+            return { kind: 'valid', state: upgradeCare(original), original };
+          }
+          if (record(ownedToys) && toyIds.every((id) => typeof ownedToys[id] === 'boolean')) {
+            return { kind: 'valid', state: data as Care };
+          }
         }
       }
     }

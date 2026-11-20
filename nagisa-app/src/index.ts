@@ -2,9 +2,9 @@ import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type IpcMainInvoke
 import { mkdirSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import appIcon from './assets/app-icon.png';
-import { isActivityKind, isFoodId, type FoodId } from './care';
+import { hugUnavailable, isActivityKind, isFoodId, isToyId, type FoodId } from './care';
 import { createCareRuntime } from './care-runtime';
-import { isDangoSlot } from './dango';
+import { dangoHugMs, isDangoMode, isDangoSlot, type DangoMode } from './dango';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -13,6 +13,12 @@ declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 const title = '古河渚桌宠';
 const size = 256;
 const maxCoordinate = 0x7fffffff;
+
+function requestedDangoMode(mode: unknown): DangoMode | undefined {
+  if (mode === undefined) return;
+  if (!isDangoMode(mode)) throw new Error('无效的小游戏玩法');
+  return mode;
+}
 
 let tray: Tray;
 
@@ -101,6 +107,8 @@ async function startPet(): Promise<void> {
 
   let journal: BrowserWindow | undefined;
   let game: BrowserWindow | undefined;
+  let gameMode: DangoMode = 'classic';
+  let hugUntil = 0;
   const care = createCareRuntime(app.getPath('userData'), !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1', (change) => {
     for (const window of [petWindow, journal, game]) {
       if (!window || window.isDestroyed()) continue;
@@ -114,8 +122,12 @@ async function startPet(): Promise<void> {
     return care.read();
   });
 
-  function openDangoGame() {
+  function openDangoGame(mode?: DangoMode) {
     if (game && !game.isDestroyed()) {
+      if (mode && !care.read().gameBusy) {
+        gameMode = mode;
+        if (!game.webContents.isLoadingMainFrame()) game.webContents.send('dango:mode', mode);
+      }
       if (game.isMinimized()) game.restore();
       if (game.isVisible()) game.focus();
       return;
@@ -123,17 +135,18 @@ async function startPet(): Promise<void> {
 
     const pet = petWindow.getBounds();
     const area = screen.getDisplayMatching(pet).workArea;
-    const width = Math.min(320, area.width);
-    const height = Math.min(270, area.height);
+    const width = Math.min(352, area.width);
+    const height = Math.min(364, area.height);
     const right = pet.x + pet.width + 8;
     const maxX = area.x + area.width - width;
     const side = right <= maxX ? right : pet.x - width - 8;
     const window = new BrowserWindow({
-      title: '猜团子', icon, width, height, show: false, autoHideMenuBar: true, webPreferences,
+      title: mode === 'lines' ? '台词接龙' : '猜团子', icon, width, height, show: false, autoHideMenuBar: true, webPreferences,
       x: Math.max(area.x, Math.min(side, maxX)),
       y: Math.max(area.y, Math.min(pet.y, area.y + area.height - height)),
     });
     game = window;
+    gameMode = mode ?? 'classic';
     const page = window.webContents;
     let owner = Symbol();
     let ownedRoundId: string | undefined;
@@ -153,11 +166,15 @@ async function startPet(): Promise<void> {
       checkSender(event);
       return care.read();
     });
-    page.ipc.handle('dango:start', (event, revision: unknown) => {
+    page.ipc.handle('dango:mode', (event) => {
+      checkSender(event);
+      return gameMode;
+    });
+    page.ipc.handle('dango:start', (event, revision: unknown, mode: unknown) => {
       checkSender(event);
       if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的开局请求');
       if (page.isLoadingMainFrame()) return { ok: false, message: '面板正在加载，请稍后重试。' };
-      const result = care.startDango(owner, revision);
+      const result = care.startDango(owner, revision, requestedDangoMode(mode));
       if (result.ok) ownedRoundId = result.round.id;
       return result;
     });
@@ -211,11 +228,11 @@ async function startPet(): Promise<void> {
       if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的手账请求');
       return care.read();
     });
-    journalContents.ipc.handle('dango:open', (event) => {
+    journalContents.ipc.handle('dango:open', (event, mode: unknown) => {
       if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame) {
         throw new Error('无效的手账请求');
       }
-      openDangoGame();
+      openDangoGame(requestedDangoMode(mode));
     });
     function feed(id: FoodId, revision: number) {
       const result = care.feed(id, revision);
@@ -241,6 +258,28 @@ async function startPet(): Promise<void> {
         throw new Error('无效的购买请求');
       }
       return care.buy(id, quantity, revision);
+    });
+    journalContents.ipc.handle('care:buy-toy', (event, id: unknown, revision: number) => {
+      if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame ||
+          !isToyId(id) || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的玩具购买请求');
+      return care.buyToy(id, revision);
+    });
+    journalContents.ipc.handle('pet:hug', (event) => {
+      if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame) {
+        throw new Error('无效的抱玩偶请求');
+      }
+      const snapshot = care.read();
+      if (snapshot.ok === false) return snapshot;
+      const { state, gameBusy } = snapshot;
+      const unavailable = hugUnavailable(state, gameBusy);
+      if (unavailable) return { ok: false, state, message: unavailable };
+      if (petWindow.isDestroyed() || !petWindow.isVisible() || contents.isCrashed()) {
+        return { ok: false, state, message: '请先从托盘找回角色。' };
+      }
+      if (performance.now() < hugUntil) return { ok: false, state, message: '渚正在抱玩偶，等一下就能再抱。' };
+      hugUntil = performance.now() + dangoHugMs;
+      contents.send('pet:hug');
+      return { ok: true, state };
     });
     journalContents.ipc.handle('care:claim-bread', (event, revision: number) => {
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {

@@ -276,6 +276,33 @@ body,
   font-size: 12px;
 }
 
+.toy-product .shop-product-summary p,
+.owned-toy p {
+  margin: 2px 0 0;
+  color: #6f5446;
+  font-size: 12px;
+}
+
+.owned-toys h3 {
+  margin: 8px 0 2px;
+  font-size: 14px;
+}
+
+.owned-toy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  padding: 4px 0;
+}
+
+.owned-toy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .dango-panel {
   --background: #fff8ed;
   --ink: #50392e;
@@ -317,6 +344,30 @@ body,
 
 .dango-instruction {
   margin: 5px 0 7px;
+}
+
+.dango-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0;
+}
+
+.dango-modes label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dango-modes input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.dango-modes label:has(input:disabled) {
+  color: var(--muted);
 }
 
 .dango-slots {
@@ -373,6 +424,44 @@ body,
 }
 
 .dango-slot-label {
+  font-size: 11px;
+}
+
+.dango-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.dango-prompt p {
+  margin: 0;
+}
+
+.dango-prompt strong {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dango-line-options {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.dango-line {
+  display: block;
+  min-height: 32px;
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.dango-line span {
+  display: block;
+  margin-top: 1px;
   font-size: 11px;
 }
 

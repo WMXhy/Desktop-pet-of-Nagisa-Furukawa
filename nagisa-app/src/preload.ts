@@ -9,11 +9,14 @@ contextBridge.exposeInMainWorld('pet', {
   feedBread: (revision) => ipcRenderer.invoke('care:feed', revision),
   feedFood: (id, revision) => ipcRenderer.invoke('care:feed-food', id, revision),
   buyFood: (id, quantity, revision) => ipcRenderer.invoke('care:buy', id, quantity, revision),
+  buyToy: (id, revision) => ipcRenderer.invoke('care:buy-toy', id, revision),
+  hugDango: () => ipcRenderer.invoke('pet:hug'),
   claimBread: (revision) => ipcRenderer.invoke('care:claim-bread', revision),
   startActivity: (kind, revision) => ipcRenderer.invoke('care:start', kind, revision),
   cancelActivity: (id, revision) => ipcRenderer.invoke('care:cancel', id, revision),
-  openDangoGame: () => ipcRenderer.invoke('dango:open'),
-  startDango: (revision) => ipcRenderer.invoke('dango:start', revision),
+  openDangoGame: (mode) => ipcRenderer.invoke('dango:open', mode),
+  readDangoMode: () => ipcRenderer.invoke('dango:mode'),
+  startDango: (revision, mode) => ipcRenderer.invoke('dango:start', revision, mode),
   pickDango: (id, slot) => ipcRenderer.invoke('dango:pick', id, slot),
   leaveDango: (id) => ipcRenderer.invoke('dango:leave', id),
   onCareChanged: (callback) => {
@@ -25,5 +28,15 @@ contextBridge.exposeInMainWorld('pet', {
     const listener = (_event: Electron.IpcRendererEvent, id: import('./care').FoodId) => callback(id);
     ipcRenderer.on('care:fed', listener);
     return () => { ipcRenderer.removeListener('care:fed', listener); };
+  },
+  onHug: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('pet:hug', listener);
+    return () => { ipcRenderer.removeListener('pet:hug', listener); };
+  },
+  onDangoMode: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, mode: import('./dango').DangoMode) => callback(mode);
+    ipcRenderer.on('dango:mode', listener);
+    return () => { ipcRenderer.removeListener('dango:mode', listener); };
   },
 } satisfies Window['pet']);
