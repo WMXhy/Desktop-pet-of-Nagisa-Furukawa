@@ -1,12 +1,14 @@
 import { createElement as h, useEffect, useState } from 'react';
-import { activityRules, activityUnavailable, remainingSeconds,
-  type ActivityDurations, type ActivityKind, type Care, type CareResponse, type Reward } from './care';
+import { activityKinds, activityRules, activityUnavailable, dramaClubStudyPoints, remainingSeconds,
+  specialLineStudyPoints, specialStudyLine, type Activity, type ActivityDurations, type ActivityKind,
+  type Care, type CareResponse, type Reward } from './care';
 
 type Submit = (request: () => Promise<CareResponse>, message: string) => Promise<void>;
 
-function rewards(reward: Reward): string {
+function rewards(reward: Reward, estimated = false): string {
   const values: [string, number][] = [
-    ['团子币', reward.coins], ['精力', reward.energy], ['心情', reward.mood], ['好感', reward.affection],
+    ['团子币', reward.coins], ['精力', reward.energy], ['心情', reward.mood],
+    [estimated ? '好感最多' : '好感', reward.affection], ['学习点', reward.studyPoints],
   ];
   return values.filter(([, value]) => value !== 0).map(([label, value]) =>
     `${label} ${value > 0 ? '+' : '−'}${Math.abs(value)}`).join('，');
@@ -20,10 +22,19 @@ function countdown(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function cancellationMessage({ kind, reward }: Activity): string {
+  const { label, cost } = activityRules[kind];
+  const spent = cost > 0 ? `已消耗 ${cost} 精力，` : '';
+  const forfeited = reward.studyPoints > 0 ? '本次不获得学习点。'
+    : reward.coins > 0 ? '本次没有工资。'
+    : reward.energy > 0 ? '本次不会恢复精力。' : '本次没有收益。';
+  return `现在结束${label}吗？${spent}${forfeited}`;
+}
+
 export function ActivityPanel({ state, durations, busy, submit }: {
   state: Care; durations: ActivityDurations; busy: boolean; submit: Submit;
 }) {
-  const [confirmation, setConfirmation] = useState<{ id: string; revision: number; kind: ActivityKind }>();
+  const [confirmation, setConfirmation] = useState<{ activity: Activity; revision: number }>();
   const [, tick] = useState(0);
   const activity = state.activeActivity;
 
@@ -33,10 +44,12 @@ export function ActivityPanel({ state, durations, busy, submit }: {
     return () => window.clearInterval(timer);
   }, [activity?.id]);
 
-  function activityOption(kind: ActivityKind, description: string) {
+  function activityOption(kind: ActivityKind) {
     const unavailable = activityUnavailable(state, kind);
-    const label = activityRules[kind].label;
-    return h('div', { className: 'activity-row' },
+    const { label, cost, reward } = activityRules[kind];
+    const description = kind === 'rest' ? `预计恢复 ${Math.min(reward.energy, 100 - state.energy)} 点精力`
+      : `消耗 ${cost} 精力，完成后${rewards(reward, true)}`;
+    return h('div', { className: 'activity-row', key: kind },
       h('div', null, h('strong', null, label), h('p', null, unavailable ?? description)),
       h('button', { type: 'button', disabled: busy || Boolean(unavailable),
         onClick: () => { void submit(() => window.pet.startActivity(kind, state.revision), `已开始${label}。`); } },
@@ -45,28 +58,30 @@ export function ActivityPanel({ state, durations, busy, submit }: {
   }
 
   const remaining = activity ? remainingSeconds(activity, Date.now()) : 0;
+  const studyProgress = state.studyPoints >= specialLineStudyPoints ? `专属待机语句 “${specialStudyLine}”`
+    : state.studyPoints >= dramaClubStudyPoints ? `再得 ${specialLineStudyPoints - state.studyPoints} 学习点，解锁专属待机语句。`
+    : `再得 ${dramaClubStudyPoints - state.studyPoints} 学习点，开放戏剧部活动。`;
   return h('section', { className: 'care-activities', 'aria-labelledby': 'activities-heading' },
     h('h2', { id: 'activities-heading' }, '活动'),
+    h('p', { className: 'study-progress' }, studyProgress),
     activity && h('div', { className: 'activity-row' },
       h('div', null,
         h('strong', null, `${activityRules[activity.kind].label} · ${remaining ? countdown(remaining) : '正在结算'}`),
         h('p', null, `预计：${activity.kind === 'rest'
-          ? `精力 +${Math.min(100 - state.energy, activity.reward.energy)}` : rewards(activity.reward)}`),
+          ? `精力 +${Math.min(100 - state.energy, activity.reward.energy)}` : rewards(activity.reward, true)}`),
       ),
       !confirmation && h('button', { type: 'button', disabled: busy || remaining === 0,
-        onClick: () => setConfirmation({ id: activity.id, kind: activity.kind, revision: state.revision }) }, '取消活动'),
+        onClick: () => setConfirmation({ activity, revision: state.revision }) }, '取消活动'),
     ),
     confirmation && h('div', { className: 'activity-confirm', role: 'group', 'aria-label': '确认取消活动' },
-      h('p', null, confirmation.kind === 'bakery'
-        ? '现在回家吗？已花的 10 点精力会保留，本次没有工资。' : '现在结束休息吗？本次不会恢复精力。'),
+      h('p', null, cancellationMessage(confirmation.activity)),
       h('button', { type: 'button', disabled: busy, onClick: () => setConfirmation(undefined) }, '返回手账'),
       h('button', { type: 'button', disabled: busy, onClick: async () => {
-        await submit(() => window.pet.cancelActivity(confirmation.id, confirmation.revision), '已取消活动。');
+        await submit(() => window.pet.cancelActivity(confirmation.activity.id, confirmation.revision), '已取消活动。');
         setConfirmation(undefined);
       } }, '确认取消'),
     ),
-    !activity && !confirmation && activityOption('rest', `预计恢复 ${Math.min(15, 100 - state.energy)} 点精力`),
-    !activity && !confirmation && activityOption('bakery', '消耗 10 精力，完成后团子币 +18、心情 −3、好感最多 +1'),
+    !activity && !confirmation && activityKinds.map(activityOption),
     state.activityLog.length > 0 && h('div', { className: 'activity-history' },
       h('h3', null, '最近记录'),
       h('ul', null, state.activityLog.map((entry) => h('li', { key: entry.id },

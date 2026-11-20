@@ -2,14 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { powerMonitor } from 'electron';
 import { createCareStore } from './care-store';
-import { activityRules, advanceOnline, buyFood, cancelActivity, claimBread, feedFood, finishDue, hungerInterval, idleInterval, localDay, startActivity,
+import { activityDurations, advanceOnline, buyFood, cancelActivity, claimBread, feedFood, finishDue, hungerInterval, idleInterval, localDay, startActivity,
   type ActivityKind, type ActivityRecord, type Care, type CareChange, type CareResponse, type CareResult, type FoodId,
   type CareSnapshot, type OnlineTime } from './care';
 
 export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
   const store = createCareStore(directory);
-  const durations = { rest: fast ? 10_000 : activityRules.rest.durationMs,
-    bakery: fast ? 10_000 : activityRules.bakery.durationMs };
+  const durations = activityDurations(fast);
   const pending: OnlineTime = { hungerMs: 0, idleMs: 0 };
   let lastSample = Math.floor(performance.now());
   let suspended = false;

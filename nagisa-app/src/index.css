@@ -55,7 +55,7 @@ body,
 
 .care-stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 4px;
   margin: 0 0 14px;
   padding: 8px 4px;
@@ -73,6 +73,7 @@ body,
   margin: 0;
   font-size: 18px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .backpack h2,
@@ -134,7 +135,8 @@ body,
 }
 
 .activity-row p,
-.activity-confirm p {
+.activity-confirm p,
+.study-progress {
   margin: 2px 0;
   color: #6f5446;
   font-size: 12px;

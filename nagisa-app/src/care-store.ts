@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { activityLogLimit, careVersion, foodIds, hungerInterval, idleInterval, isActivityKind, newCare, upgradeCare,
-  type Care, type CareV1, type CareV2, type CareReadResult, type CareResponse } from './care';
+  type Care, type LegacyCare, type CareReadResult, type CareResponse } from './care';
 
-type SaveFile = { kind: 'valid'; state: Care; original?: CareV1 | CareV2 } | { kind: 'missing' | 'invalid' | 'newer' };
+type SaveFile = { kind: 'valid'; state: Care; original?: LegacyCare } | { kind: 'missing' | 'invalid' | 'newer' };
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -26,23 +26,32 @@ function validCommonFields(data: Record<string, unknown>): boolean {
     integer(data.daily.gained, 12) && record(data.inventory) && integer(data.inventory.bread);
 }
 
-function reward(value: unknown): boolean {
+function validLegacyReward(value: unknown): boolean {
   return record(value) && integer(value.coins, 1_000_000) && integer(value.energy, 100) &&
     typeof value.mood === 'number' && Number.isInteger(value.mood) && Math.abs(value.mood) <= 100 &&
     integer(value.affection, 300);
 }
 
-function activityIdentity(value: Record<string, unknown>): boolean {
-  return typeof value.id === 'string' && value.id.trim().length > 0 && isActivityKind(value.kind);
+function validReward(value: unknown): boolean {
+  return record(value) && validLegacyReward(value) && integer(value.studyPoints);
 }
 
-function validActivity(value: unknown): boolean {
-  return value === null || (record(value) && activityIdentity(value) && integer(value.startedAt, 8.64e15) &&
-    integer(value.endsAt, 8.64e15) && value.endsAt > value.startedAt && reward(value.reward));
+function isLegacyActivityKind(value: unknown): boolean {
+  return value === 'rest' || value === 'bakery';
 }
 
-function validV2Fields(data: Record<string, unknown>): boolean {
-  return validActivity(data.activeActivity) && Array.isArray(data.activityLog) && data.activityLog.length <= activityLogLimit &&
+function validActivityFields(data: Record<string, unknown>, legacy: boolean): boolean {
+  const validKind = legacy ? isLegacyActivityKind : isActivityKind;
+  const reward = legacy ? validLegacyReward : validReward;
+  const active = data.activeActivity;
+
+  function activityIdentity(value: Record<string, unknown>): boolean {
+    return typeof value.id === 'string' && value.id.trim().length > 0 && validKind(value.kind);
+  }
+
+  return (active === null || (record(active) && activityIdentity(active) && integer(active.startedAt, 8.64e15) &&
+    integer(active.endsAt, 8.64e15) && active.endsAt > active.startedAt && reward(active.reward))) &&
+    Array.isArray(data.activityLog) && data.activityLog.length <= activityLogLimit &&
     data.activityLog.every((entry: unknown) => record(entry) && activityIdentity(entry) && integer(entry.endedAt, 8.64e15) &&
       (entry.outcome === 'completed' || entry.outcome === 'cancelled') && reward(entry.actual)) &&
     record(data.online) && integer(data.online.hungerMs, hungerInterval - 1) && integer(data.online.idleMs, idleInterval - 1);
@@ -54,19 +63,16 @@ function readSave(file: string): SaveFile {
     if (record(data)) {
       if (integer(data.version) && data.version > careVersion) return { kind: 'newer' };
       if (validCommonFields(data)) {
-        if (data.version === 1) {
-          const original = data as CareV1;
+        const { version, inventory } = data;
+        const hasLegacyActivities = version === 2 || (version === 3 && record(inventory) &&
+          integer(inventory.redBeanBread) && integer(inventory.dangoSnack));
+        if (version === 1 || (hasLegacyActivities && validActivityFields(data, true))) {
+          const original = data as LegacyCare;
           return { kind: 'valid', state: upgradeCare(original), original };
         }
-        if (validV2Fields(data)) {
-          if (data.version === 2) {
-            const original = data as CareV2;
-            return { kind: 'valid', state: upgradeCare(original), original };
-          }
-          const inventory = data.inventory;
-          if (data.version === careVersion && record(inventory) && foodIds.every((id) => integer(inventory[id]))) {
-            return { kind: 'valid', state: data as Care };
-          }
+        if (version === careVersion && integer(data.studyPoints) && record(inventory) &&
+            foodIds.every((id) => integer(inventory[id])) && validActivityFields(data, false)) {
+          return { kind: 'valid', state: data as Care };
         }
       }
     }
@@ -77,7 +83,7 @@ function readSave(file: string): SaveFile {
   return { kind: 'invalid' };
 }
 
-function writeSave(file: string, state: Care | CareV1 | CareV2): void {
+function writeSave(file: string, state: Care | LegacyCare): void {
   const temporaryFile = `${file}.tmp`;
   writeFileSync(temporaryFile, JSON.stringify(state), { encoding: 'utf8', flush: true });
   renameSync(temporaryFile, file);

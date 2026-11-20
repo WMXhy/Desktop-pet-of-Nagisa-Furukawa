@@ -1,7 +1,10 @@
-export const careVersion = 3;
+export const careVersion = 4;
 export const hungerInterval = 600_000;
 export const idleInterval = 300_000;
 export const activityLogLimit = 20;
+export const dramaClubStudyPoints = 9;
+export const specialLineStudyPoints = 20;
+export const specialStudyLine = '今天，我能抬起头念台词了。';
 
 export const foods = {
   bread: { name: '小面包', price: 6, fullness: 18, mood: 0, affection: 1 },
@@ -15,8 +18,17 @@ export function isFoodId(value: unknown): value is FoodId {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(foods, value);
 }
 
-export type ActivityKind = 'rest' | 'bakery';
-export type Reward = { coins: number; energy: number; mood: number; affection: number };
+type LegacyReward = { coins: number; energy: number; mood: number; affection: number };
+type LegacyActivity = { id: string; kind: 'rest' | 'bakery'; startedAt: number; endsAt: number; reward: LegacyReward };
+type LegacyActivityRecord = {
+  id: string;
+  kind: LegacyActivity['kind'];
+  outcome: 'completed' | 'cancelled';
+  endedAt: number;
+  actual: LegacyReward;
+};
+
+export type Reward = LegacyReward & { studyPoints: number };
 export type Activity = { id: string; kind: ActivityKind; startedAt: number; endsAt: number; reward: Reward };
 export type ActivityRecord = {
   id: string;
@@ -29,14 +41,27 @@ export type OnlineTime = { hungerMs: number; idleMs: number };
 export type ActivityDurations = Record<ActivityKind, number>;
 
 export const activityRules = {
-  rest: { label: '休息', durationMs: 300_000, cost: 0, minFullness: 0,
-    reward: { coins: 0, energy: 15, mood: 0, affection: 0 } },
-  bakery: { label: '面包店帮工', durationMs: 180_000, cost: 10, minFullness: 15,
-    reward: { coins: 18, energy: 0, mood: -3, affection: 1 } },
-};
+  rest: { label: '休息', durationMs: 300_000, cost: 0, minFullness: 0, minStudy: 0,
+    reward: { coins: 0, energy: 15, mood: 0, affection: 0, studyPoints: 0 } },
+  bakery: { label: '面包店帮工', durationMs: 180_000, cost: 10, minFullness: 15, minStudy: 0,
+    reward: { coins: 18, energy: 0, mood: -3, affection: 1, studyPoints: 0 } },
+  study: { label: '温习功课', durationMs: 180_000, cost: 8, minFullness: 0, minStudy: 0,
+    reward: { coins: 0, energy: 0, mood: 0, affection: 1, studyPoints: 3 } },
+  rehearse: { label: '朗读排练', durationMs: 300_000, cost: 12, minFullness: 0, minStudy: dramaClubStudyPoints,
+    reward: { coins: 0, energy: 0, mood: 2, affection: 2, studyPoints: 5 } },
+  work_props: { label: '整理戏剧部道具', durationMs: 360_000, cost: 16, minFullness: 15, minStudy: dramaClubStudyPoints,
+    reward: { coins: 32, energy: 0, mood: -3, affection: 2, studyPoints: 0 } },
+} satisfies Record<string, { label: string; durationMs: number; cost: number; minFullness: number; minStudy: number; reward: Reward }>;
+
+export type ActivityKind = keyof typeof activityRules;
+export const activityKinds: readonly ActivityKind[] = Object.keys(activityRules) as ActivityKind[];
 
 export function isActivityKind(value: unknown): value is ActivityKind {
-  return value === 'rest' || value === 'bakery';
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(activityRules, value);
+}
+
+export function activityDurations(fast = false): ActivityDurations {
+  return Object.fromEntries(activityKinds.map((kind) => [kind, fast ? 10_000 : activityRules[kind].durationMs])) as ActivityDurations;
 }
 
 export function localDay(now = new Date()): string {
@@ -64,16 +89,27 @@ type ActivityFields = {
   online: OnlineTime;
 };
 type LegacyInventory = { bread: number };
+type LegacyActivityFields = { activeActivity: LegacyActivity | null; activityLog: LegacyActivityRecord[]; online: OnlineTime };
 export type CareV1 = CareFields & { version: 1; inventory: LegacyInventory };
-export type CareV2 = CareFields & ActivityFields & { version: 2; inventory: LegacyInventory };
-export type Care = CareFields & ActivityFields & { version: typeof careVersion; inventory: Record<FoodId, number> };
+type CareV2 = CareFields & LegacyActivityFields & { version: 2; inventory: LegacyInventory };
+type CareV3 = CareFields & LegacyActivityFields & { version: 3; inventory: { bread: number; redBeanBread: number; dangoSnack: number } };
+export type LegacyCare = CareV1 | CareV2 | CareV3;
+export type Care = CareFields & ActivityFields & {
+  version: typeof careVersion;
+  inventory: Record<FoodId, number>;
+  studyPoints: number;
+};
 
-export function upgradeCare(state: CareV1 | CareV2): Care {
-  const activities: ActivityFields = state.version === 2 ? {
-    activeActivity: state.activeActivity, activityLog: state.activityLog, online: state.online,
-  } : { activeActivity: null, activityLog: [], online: { hungerMs: 0, idleMs: 0 } };
-  return { ...state, ...activities, version: careVersion,
-    inventory: { bread: state.inventory.bread, redBeanBread: 0, dangoSnack: 0 } };
+export function upgradeCare(state: LegacyCare): Care {
+  const activities: ActivityFields = state.version === 1
+    ? { activeActivity: null, activityLog: [], online: { hungerMs: 0, idleMs: 0 } }
+    : {
+      activeActivity: state.activeActivity && { ...state.activeActivity, reward: { ...state.activeActivity.reward, studyPoints: 0 } },
+      activityLog: state.activityLog.map((entry) => ({ ...entry, actual: { ...entry.actual, studyPoints: 0 } })),
+      online: state.online,
+    };
+  return { ...state, ...activities, version: careVersion, studyPoints: 0,
+    inventory: state.version === 3 ? state.inventory : { bread: state.inventory.bread, redBeanBread: 0, dangoSnack: 0 } };
 }
 
 export function newCare(day = localDay()): Care {
@@ -154,6 +190,7 @@ export function claimBread(state: Care, revision: number): CareResult {
 export function activityUnavailable(state: Care, kind: ActivityKind): string | undefined {
   const rule = activityRules[kind];
   if (state.activeActivity) return '渚正在活动中。';
+  if (state.studyPoints < rule.minStudy) return `还差 ${rule.minStudy - state.studyPoints} 学习点。`;
   if (state.fullness < rule.minFullness) return `饱食不足，需要至少 ${rule.minFullness} 点。`;
   if (state.energy < rule.cost) return `精力不足，需要至少 ${rule.cost} 点。`;
 }
@@ -180,10 +217,11 @@ export function finishDue(state: Care, id: string, now: number) {
     coins: Math.min(Number.MAX_SAFE_INTEGER, state.coins + reward.coins),
     energy: Math.min(100, state.energy + reward.energy),
     mood: Math.max(0, Math.min(100, state.mood + reward.mood)),
+    studyPoints: Math.min(Number.MAX_SAFE_INTEGER, state.studyPoints + reward.studyPoints),
   };
   const entry: ActivityRecord = { id, kind: activity.kind, outcome: 'completed', endedAt: activity.endsAt,
     actual: { coins: next.coins - state.coins, energy: next.energy - state.energy,
-      mood: next.mood - state.mood, affection: next.affection - state.affection } };
+      mood: next.mood - state.mood, affection: next.affection - state.affection, studyPoints: next.studyPoints - state.studyPoints } };
   return { state: recordActivity(next, entry), entry };
 }
 
@@ -196,7 +234,7 @@ export function cancelActivity(state: Care, id: string, revision: number, now: n
     return { ok: false, state, message: '活动状态已更新，请再看一眼。' };
   }
   return { ok: true, state: recordActivity(state, { id, kind: activity.kind, outcome: 'cancelled', endedAt: now,
-    actual: { coins: 0, energy: 0, mood: 0, affection: 0 } }) };
+    actual: { coins: 0, energy: 0, mood: 0, affection: 0, studyPoints: 0 } }) };
 }
 
 export function advanceOnline(state: Care, elapsed: OnlineTime): Care {
