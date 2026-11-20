@@ -1,19 +1,28 @@
-import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type IpcMainInvokeEvent, type Point } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, screen, Tray,
+  type IpcMainInvokeEvent, type Point, type Rectangle } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import appIcon from './assets/app-icon.png';
-import { hugUnavailable, isActivityKind, isFoodId, isToyId, practiceLineUnavailable, type CareResponse, type FoodId } from './care';
+import { activityRules, hugUnavailable, isActivityKind, isFoodId, isToyId, newCare, practiceLineUnavailable,
+  type Care, type CareChange, type CareResponse, type FoodId } from './care';
+import { writeAtomic } from './atomic-file';
+import { readSave } from './care-store';
 import { createCareRuntime } from './care-runtime';
 import { dangoHugMs, isDangoMode, isDangoSlot, type DangoMode } from './dango';
-import { homePosition, restorePosition, savePosition } from './pet-position';
+import { petBounds, restorePosition, savePosition } from './pet-position';
 import { practiceLineMs } from './relationship';
+import { watchDesktop } from './desktop-state';
+import { defaultSettings, type JournalSection, type Settings, type SettingsResult, type ShortcutAction } from './settings';
+import { createSettingsController, type SettingsChange } from './settings-controller';
+import { exportJson, readTransfer, recoverDataTransaction, replaceSavedData, RollbackError, transferPreview,
+  type TransferPreview, type TransferResponse } from './save-transfer';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 const title = '古河渚桌宠';
-const size = 256;
-const maxCoordinate = 0x7fffffff;
+const baseSize = 256;
 
 function requestedDangoMode(mode: unknown): DangoMode | undefined {
   if (mode === undefined) return;
@@ -24,16 +33,19 @@ function requestedDangoMode(mode: unknown): DangoMode | undefined {
 let tray: Tray;
 
 async function startPet(): Promise<void> {
+  const directory = app.getPath('userData');
+  mkdirSync(directory, { recursive: true });
+  recoverDataTransaction(directory);
+  const settings = createSettingsController(directory, applyDesktop, useShortcut);
   const icon = nativeImage.createFromDataURL(appIcon);
-  const { x, y } = restorePosition(size);
+  const size = petSize(settings.settings());
+  const savedPoint = restorePosition(size);
+  const firstBounds = petBounds(size, settings.settings().displayId, { ...savedPoint, width: size, height: size });
   const webPreferences = { preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY, contextIsolation: true, nodeIntegration: false, sandbox: true };
   const petWindow = new BrowserWindow({
     title,
     icon,
-    width: size,
-    height: size,
-    x,
-    y,
+    ...firstBounds,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -45,18 +57,26 @@ async function startPet(): Promise<void> {
   });
 
   let pendingSave: ReturnType<typeof setTimeout> | undefined;
+  let previewOrigin: Rectangle | undefined;
   function saveNow() {
     clearTimeout(pendingSave);
-    savePosition(petWindow.getBounds());
+    savePosition(previewOrigin ?? petWindow.getBounds());
   }
   petWindow.on('move', () => {
+    if (previewOrigin) return;
     clearTimeout(pendingSave);
     pendingSave = setTimeout(saveNow, 250);
   });
   petWindow.on('close', saveNow);
   petWindow.on('closed', () => clearTimeout(pendingSave));
 
-  let passThrough = false;
+  let passThrough = settings.settings().passThrough;
+  let desktopSettings = settings.settings();
+  let userHidden = !desktopSettings.showOnStartup;
+  let windowsReady = false;
+  let quitting = false;
+  let desktopState = { fullscreen: false, notificationsAllowed: process.platform !== 'win32' };
+  let lastQuiet: boolean | undefined;
   let gesture: { pointer: Point; origin: Point; dragged: boolean } | undefined;
   let greetingClickUntil = 0;
 
@@ -65,10 +85,12 @@ async function startPet(): Promise<void> {
     const dx = screenX - gesture.pointer.x;
     const dy = screenY - gesture.pointer.y;
     if (Math.hypot(dx, dy) > 5) gesture.dragged = true;
-    if (gesture.dragged) {
+    if (gesture.dragged && desktopSettings.allowDrag && !desktopSettings.lockPosition) {
       const x = Math.round(gesture.origin.x + dx);
       const y = Math.round(gesture.origin.y + dy);
-      if (Math.abs(x) <= maxCoordinate && Math.abs(y) <= maxCoordinate) petWindow.setPosition(x, y);
+      if (Number.isSafeInteger(x) && Number.isSafeInteger(y) && Math.abs(x) <= 0x7fffffff && Math.abs(y) <= 0x7fffffff) {
+        petWindow.setBounds(petBounds(petSize(desktopSettings), desktopSettings.displayId, { ...petWindow.getBounds(), x, y }));
+      }
     }
   }
 
@@ -100,27 +122,100 @@ async function startPet(): Promise<void> {
   });
 
   function showPet() {
-    petWindow.showInactive();
-    if (petWindow.isAlwaysOnTop()) return;
-    petWindow.setAlwaysOnTop(true);
-    if (process.platform === 'win32' && !petWindow.isAlwaysOnTop()) {
+    if (!petWindow.isVisible()) petWindow.showInactive();
+    if (petWindow.isAlwaysOnTop() === desktopSettings.onTop) return;
+    petWindow.setAlwaysOnTop(desktopSettings.onTop);
+    if (desktopSettings.onTop && process.platform === 'win32' && !petWindow.isAlwaysOnTop()) {
       // Windows 有时不会为不抢焦点的窗口应用默认置顶层级。
       petWindow.setAlwaysOnTop(true, 'pop-up-menu');
     }
   }
 
+  function petSize(value: Settings) { return Math.round(baseSize * value.scale / 100); }
+
+  function updateVisibility() {
+    if (quitting || !windowsReady || petWindow.isDestroyed()) return;
+    const temporarilyHidden = desktopState.fullscreen && desktopSettings.fullscreenQuiet && desktopSettings.fullscreenHide;
+    if (userHidden || temporarilyHidden) {
+      gesture = undefined;
+      greetingClickUntil = 0;
+      if (petWindow.isVisible()) petWindow.hide();
+    } else showPet();
+    refreshMenu();
+  }
+
+  function applyDesktop(kind: SettingsChange) {
+    const { effective } = settings.view();
+    if (!petWindow.isDestroyed() && !quitting) {
+      const bounds = petWindow.getBounds();
+      if (kind === 'preview' && !previewOrigin) { previewOrigin = bounds; clearTimeout(pendingSave); }
+      if (kind === 'cancel' || kind === 'apply' || effective.scale !== desktopSettings.scale || effective.displayId !== desktopSettings.displayId) {
+        const anchor = kind === 'apply' && effective.scale === desktopSettings.scale && effective.displayId === desktopSettings.displayId
+          ? bounds : previewOrigin ?? bounds;
+        petWindow.setBounds(petBounds(petSize(effective), effective.displayId, anchor));
+      }
+      if (kind === 'apply' || kind === 'cancel') {
+        previewOrigin = undefined;
+        if (kind === 'apply') saveNow();
+      }
+      if (passThrough !== effective.passThrough) {
+        gesture = undefined;
+        greetingClickUntil = 0;
+      }
+      passThrough = effective.passThrough;
+      petWindow.setIgnoreMouseEvents(passThrough);
+      petWindow.setOpacity(effective.opacity / 100);
+    }
+    desktopSettings = effective;
+    updateVisibility();
+    broadcastSettings();
+  }
+
   let journal: BrowserWindow | undefined;
   let game: BrowserWindow | undefined;
+  let settingsWindow: BrowserWindow | undefined;
   let gameMode: DangoMode = 'classic';
   let interactionUntil = 0;
-  const care = createCareRuntime(app.getPath('userData'), !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1', (change) => {
+  const fast = !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1';
+  let careEpoch = 0;
+  function publishCare(change: CareChange) {
     for (const window of [petWindow, journal, game]) {
       if (!window || window.isDestroyed()) continue;
       const page = window.webContents;
       if (!page.isCrashed() && page.getURL()) page.send('care:changed', change);
     }
+    if (settingsWindow && !settingsWindow.isDestroyed()) sendSettings(settingsWindow);
+    if (change.completed && desktopSettings.systemNotifications && !settings.presentation().quiet && desktopState.notificationsAllowed) {
+      const activity = change.completed;
+      tray?.displayBalloon({ title, content: `${activityRules[activity.kind].label}已完成，收益可在手账查看。`,
+        noSound: true, respectQuietTime: true });
+    }
+  }
+  let care = createCareRuntime(directory, fast, publishCare, careEpoch);
+  app.once('before-quit', () => {
+    quitting = true;
+    care.close();
   });
-  app.once('before-quit', () => care.close());
+
+  function ensureEpoch(epoch: unknown) {
+    if (epoch !== careEpoch) throw new Error('养成档已更新，请重新操作。');
+  }
+
+  function sendSettings(window: BrowserWindow) {
+    const page = window.webContents;
+    if (page.getURL() && !page.isCrashed()) page.send('settings:changed', settings.view());
+  }
+
+  function broadcastSettings() {
+    lastQuiet = settings.presentation().quiet;
+    for (const window of [petWindow, journal, game, settingsWindow]) if (window && !window.isDestroyed()) sendSettings(window);
+  }
+
+  function readSettings(event: IpcMainInvokeEvent) {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) throw new Error('无效的设置读取请求');
+    return settings.view(event.sender === settingsWindow?.webContents);
+  }
+  ipc.handle('settings:read', readSettings);
   ipc.handle('care:read', (event) => {
     if (event.senderFrame !== contents.mainFrame) throw new Error('无效的角色请求');
     return care.read();
@@ -181,12 +276,14 @@ async function startPet(): Promise<void> {
       checkSender(event);
       return care.read();
     });
+    page.ipc.handle('settings:read', readSettings);
     page.ipc.handle('dango:mode', (event) => {
       checkSender(event);
       return gameMode;
     });
-    page.ipc.handle('dango:start', (event, revision: unknown, mode: unknown) => {
+    page.ipc.handle('dango:start', (event, revision: unknown, mode: unknown, epoch: unknown) => {
       checkSender(event);
+      ensureEpoch(epoch);
       if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的开局请求');
       if (page.isLoadingMainFrame()) return { ok: false, message: '面板正在加载，请稍后重试。' };
       const result = care.startDango(owner, revision, requestedDangoMode(mode));
@@ -221,10 +318,11 @@ async function startPet(): Promise<void> {
     });
   }
 
-  function openJournal() {
+  function openJournal(section?: JournalSection) {
     if (journal && !journal.isDestroyed()) {
       if (journal.isMinimized()) journal.restore();
       journal.focus();
+      if (section) journal.webContents.send('journal:section', section);
       return;
     }
 
@@ -239,6 +337,10 @@ async function startPet(): Promise<void> {
     });
     journal = window;
     const journalContents = window.webContents;
+    journalContents.ipc.handle('settings:open', (event) => {
+      if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的设置请求');
+      openSettings();
+    });
     journalContents.ipc.handle('care:read', (event) => {
       if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的手账请求');
       return care.read();
@@ -256,25 +358,29 @@ async function startPet(): Promise<void> {
       }
       return result;
     }
-    journalContents.ipc.handle('care:feed', (event, revision: number) => {
+    journalContents.ipc.handle('care:feed', (event, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的喂食请求');
       }
       return feed('bread', revision);
     });
-    journalContents.ipc.handle('care:feed-food', (event, id: unknown, revision: number) => {
+    journalContents.ipc.handle('care:feed-food', (event, id: unknown, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !isFoodId(id) ||
           !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的喂食请求');
       return feed(id, revision);
     });
-    journalContents.ipc.handle('care:buy', (event, id: unknown, quantity: number, revision: number) => {
+    journalContents.ipc.handle('care:buy', (event, id: unknown, quantity: number, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !isFoodId(id) ||
           !Number.isSafeInteger(quantity) || quantity < 1 || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的购买请求');
       }
       return care.buy(id, quantity, revision);
     });
-    journalContents.ipc.handle('care:buy-toy', (event, id: unknown, revision: number) => {
+    journalContents.ipc.handle('care:buy-toy', (event, id: unknown, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.sender !== journalContents || !event.senderFrame || event.senderFrame !== journalContents.mainFrame ||
           !isToyId(id) || !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的玩具购买请求');
       return care.buyToy(id, revision);
@@ -299,18 +405,21 @@ async function startPet(): Promise<void> {
     }
     journalContents.ipc.handle('pet:hug', (event) => requestInteraction(event, 'pet:hug'));
     journalContents.ipc.handle('pet:listen-line', (event) => requestInteraction(event, 'pet:listen-line'));
-    journalContents.ipc.handle('care:claim-bread', (event, revision: number) => {
+    journalContents.ipc.handle('care:claim-bread', (event, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的补给请求');
       }
       return care.claimBread(revision);
     });
-    journalContents.ipc.handle('care:start', (event, kind: unknown, revision: number) => {
+    journalContents.ipc.handle('care:start', (event, kind: unknown, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !isActivityKind(kind) ||
           !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的活动请求');
       return care.start(kind, revision);
     });
-    journalContents.ipc.handle('care:cancel', (event, id: unknown, revision: number) => {
+    journalContents.ipc.handle('care:cancel', (event, id: unknown, revision: number, epoch: unknown) => {
+      ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || typeof id !== 'string' || !id.trim() ||
           !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的取消请求');
       return care.cancel(id, revision);
@@ -318,11 +427,147 @@ async function startPet(): Promise<void> {
     window.once('ready-to-show', () => window.show());
     window.on('closed', () => {
       if (journal === window) journal = undefined;
+      if (!quitting && !desktopSettings.stayInTray) app.quit();
     });
-    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#journal`).catch((error) => {
+    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#journal${section ? `?${section}` : ''}`).catch((error) => {
       if (window.isDestroyed()) return;
       console.error('手账无法打开', error);
       window.close();
+    });
+  }
+
+  function openSettings() {
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      if (settingsWindow.isMinimized()) settingsWindow.restore();
+      if (settingsWindow.isVisible()) settingsWindow.focus();
+      return;
+    }
+    const window = new BrowserWindow({ title: '桌宠设置', icon, width: 700, height: 550,
+      minWidth: 540, minHeight: 370, show: false, autoHideMenuBar: true, webPreferences });
+    settingsWindow = window;
+    const page = window.webContents;
+    let transfer: { preview: TransferPreview; state: Care; preferences?: Settings } | undefined;
+    function check(event: IpcMainInvokeEvent) {
+      if (event.sender !== page || !event.senderFrame || event.senderFrame !== page.mainFrame ||
+          !event.senderFrame.url.endsWith('#settings')) throw new Error('无效的设置请求');
+    }
+
+    page.ipc.handle('settings:read', readSettings);
+    page.ipc.handle('settings:preview', (event, draft: unknown) => { check(event); return settings.preview(draft); });
+    page.ipc.handle('settings:apply', (event, draft: unknown) => {
+      check(event);
+      const result = settings.apply(draft);
+      if (result.ok === false && previewOrigin) cancelPreview();
+      return result;
+    });
+    page.ipc.handle('settings:cancel', (event) => { check(event); cancelPreview(); return settings.view(true); });
+    page.ipc.handle('settings:reset-position', (event) => {
+      check(event);
+      if (!previewOrigin) { previewOrigin = petWindow.getBounds(); clearTimeout(pendingSave); }
+      petWindow.setBounds(petBounds(petSize(desktopSettings), desktopSettings.displayId));
+    });
+    page.ipc.handle('settings:preview-animation', (event): SettingsResult => {
+      check(event);
+      const current = care.read();
+      if (current.ok === false) return current;
+      if (!petWindow.isVisible() || contents.isCrashed()) return { ok: false, message: '请先从托盘找回角色。' };
+      if (current.gameBusy || current.state.activeActivity) return { ok: false, message: '活动或小游戏结束后可以预览动作。' };
+      contents.send('settings:preview-animation');
+      return { ok: true, view: settings.view() };
+    });
+    page.ipc.handle('settings:dismiss-onboarding', (event): SettingsResult => {
+      check(event);
+      return settings.quick('onboardingSeen', true);
+    });
+
+    const jsonPicker = { filters: [{ name: '桌宠存档 JSON', extensions: ['json'] }] };
+    page.ipc.handle('data:export', async (event): Promise<TransferResponse> => {
+      check(event);
+      const selected = await dialog.showSaveDialog(window, { ...jsonPicker, title: '导出桌宠存档', defaultPath: '古河渚桌宠存档.json' });
+      if (selected.canceled || !selected.filePath || window.isDestroyed()) return { ok: true, cancelled: true };
+      const snapshot = care.read();
+      if (snapshot.ok === false) return snapshot;
+      if (snapshot.warning) return { ok: false, message: snapshot.warning };
+      try { writeAtomic(selected.filePath, exportJson(snapshot.state, settings.settings()), `.${randomUUID()}.tmp`); }
+      catch { return { ok: false, message: '无法写入导出文件，请选择可写入的位置。' }; }
+      return { ok: true };
+    });
+    page.ipc.handle('data:preview', async (event, action: unknown): Promise<TransferResponse> => {
+      check(event);
+      transfer = undefined;
+      let state: Care;
+      let preferences: Settings | undefined;
+      if (action === 'import') {
+        const selected = await dialog.showOpenDialog(window, { ...jsonPicker, title: '选择桌宠导出档', properties: ['openFile'] });
+        if (selected.canceled || !selected.filePaths[0] || window.isDestroyed()) return { ok: true, cancelled: true };
+        const decoded = readTransfer(selected.filePaths[0], settings.settings());
+        if (decoded.ok === false) return decoded;
+        ({ state, settings: preferences } = decoded);
+      } else if (action === 'backup') {
+        const backup = readSave(join(directory, 'save.backup.json'));
+        if (backup.kind !== 'valid') return { ok: false, message: backup.kind === 'newer' ? '备份来自较新版本。' : '没有可恢复的养成备份。' };
+        state = backup.state;
+      } else if (action === 'reset') state = newCare();
+      else throw new Error('无效的数据操作');
+      const preview = transferPreview(state, action);
+      transfer = { preview, state, preferences };
+      return { ok: true, preview };
+    });
+
+    page.ipc.handle('data:apply', (event, token: unknown, confirm: unknown): TransferResponse => {
+      check(event);
+      const selected = transfer;
+      if (!selected || selected.preview.token !== token) return { ok: false, message: '确认已失效，请重新预览。' };
+      if (selected.preview.action === 'reset' && confirm !== '清空养成') return { ok: false, message: '请输入「清空养成」确认。' };
+      if (!settings.canWrite) return { ok: false, message: '本机设置来自较新版本，请升级桌宠。' };
+      const before = care.read();
+      if (before.ok === false && before.message.includes('较新版本')) return before;
+      if (before.warning) return { ok: false, message: before.warning };
+      const saved = settings.settings();
+      const next = selected.preferences ? { ...selected.preferences, launchAtLogin: saved.launchAtLogin,
+        displayId: saved.displayId, shortcuts: saved.shortcuts, onboardingSeen: saved.onboardingSeen } : saved;
+      try { replaceSavedData(directory, selected.state, next, before.ok ? before.state : undefined, saved); }
+      catch (error) {
+        console.error('数据替换失败', error);
+        if (error instanceof RollbackError) {
+          care.close(false);
+          quitting = true;
+          dialog.showErrorBox('数据待恢复', error.message);
+          app.exit(1);
+        }
+        return { ok: false, message: '替换失败，原有数据已保留。可以重试。' };
+      }
+      transfer = undefined;
+      gesture = undefined;
+      greetingClickUntil = 0;
+      interactionUntil = 0;
+      care.close(false);
+      careEpoch += 1;
+      care = createCareRuntime(directory, fast, publishCare, careEpoch);
+      settings.replace(next);
+      publishCare({ snapshot: care.read() });
+      return { ok: true };
+    });
+    page.ipc.handle('data:cancel', (event) => { check(event); transfer = undefined; });
+
+    function cancelPreview() {
+      settings.cancel();
+      if (previewOrigin) applyDesktop('cancel');
+      transfer = undefined;
+    }
+    window.on('closed', () => {
+      settingsWindow = undefined;
+      cancelPreview();
+      if (!quitting && !settings.settings().onboardingSeen) settings.quick('onboardingSeen', true);
+    });
+    page.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+      if (isMainFrame && !isSameDocument) cancelPreview();
+    });
+    page.on('render-process-gone', () => { if (!window.isDestroyed()) window.destroy(); });
+    window.once('ready-to-show', () => window.show());
+    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#settings`).catch((error) => {
+      console.error('桌宠设置无法打开', error);
+      if (!window.isDestroyed()) window.close();
     });
   }
 
@@ -332,30 +577,35 @@ async function startPet(): Promise<void> {
   function recoverPet() {
     gesture = undefined;
     greetingClickUntil = 0;
-    passThrough = false;
-    petWindow.setIgnoreMouseEvents(false);
-    const { x, y } = homePosition(size);
-    petWindow.setPosition(x, y);
-    showPet();
+    userHidden = false;
+    if (passThrough) settings.quick('passThrough', false, true);
+    const target = desktopSettings.displayId ?? screen.getPrimaryDisplay().id;
+    petWindow.setBounds(petBounds(petSize(desktopSettings), target));
+    if (previewOrigin) previewOrigin = petBounds(petSize(settings.settings()), settings.settings().displayId ?? screen.getPrimaryDisplay().id);
     saveNow();
-    refreshMenu();
+    updateVisibility();
+  }
+
+  function togglePet() {
+    userHidden = !userHidden;
+    updateVisibility();
+  }
+
+  function useShortcut(action: ShortcutAction) {
+    if (action === 'togglePet') togglePet();
+    else if (action === 'recoverPet') recoverPet();
+    else openJournal();
   }
 
   function refreshMenu() {
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: '打开手账', click: openJournal },
+      { label: '打开手账', click: () => openJournal() },
+      { label: '设置', click: openSettings },
       { type: 'separator' },
-      { label: '隐藏角色', enabled: petWindow.isVisible(), click: () => {
-        gesture = undefined;
-        greetingClickUntil = 0;
-        petWindow.hide();
-        refreshMenu();
-      } },
+      { label: userHidden ? '显示角色' : '隐藏角色', click: togglePet },
       { label: '鼠标穿透', type: 'checkbox', checked: passThrough, click: (item) => {
-        gesture = undefined;
-        greetingClickUntil = 0;
-        passThrough = item.checked;
-        petWindow.setIgnoreMouseEvents(passThrough);
+        const result = settings.quick('passThrough', item.checked);
+        if (result.ok === false) { item.checked = passThrough; dialog.showErrorBox('设置未保存', result.message); }
       } },
       { label: '找回角色', click: recoverPet },
       { type: 'separator' },
@@ -363,24 +613,64 @@ async function startPet(): Promise<void> {
     ]));
   }
 
+  contents.on('context-menu', () => {
+    if (passThrough) return;
+    Menu.buildFromTemplate([
+      { label: '打开手账', click: () => openJournal() },
+      { label: '喂食', click: () => openJournal('feed') },
+      { label: '面包店帮工', click: () => openJournal('bakery') },
+      { label: '温习功课', click: () => openJournal('study') },
+      { label: '玩小游戏', click: () => openDangoGame() },
+      { type: 'separator' },
+      { label: '设置', click: openSettings },
+      { label: '隐藏角色', click: togglePet },
+    ]).popup({ window: petWindow });
+  });
+
   function recoverAfterDisplayRemoval() {
     const { x, y, width, height } = petWindow.getBounds();
     const fits = screen.getAllDisplays().some(({ workArea: area }) => (
       x >= area.x && y >= area.y && x + width <= area.x + area.width && y + height <= area.y + area.height
     ));
-    if (!fits) recoverPet();
+    if (!fits) {
+      petWindow.setBounds(petBounds(petSize(desktopSettings), screen.getPrimaryDisplay().id));
+      if (previewOrigin) previewOrigin = petBounds(petSize(settings.settings()), screen.getPrimaryDisplay().id);
+      saveNow();
+    }
+    broadcastSettings();
   }
 
   screen.on('display-removed', recoverAfterDisplayRemoval);
+  screen.on('display-metrics-changed', recoverAfterDisplayRemoval);
+  screen.on('display-added', broadcastSettings);
+  const stopWatch = watchDesktop((state) => {
+    desktopState = state;
+    settings.setFullscreen(state.fullscreen);
+    updateVisibility();
+    broadcastSettings();
+  });
+  const quietTimer = setInterval(() => {
+    if (lastQuiet !== settings.presentation().quiet) broadcastSettings();
+  }, 1000);
+  app.on('second-instance', () => {
+    if (settingsWindow && !settingsWindow.isDestroyed()) openSettings();
+    else openJournal();
+  });
   petWindow.on('closed', () => {
+    stopWatch();
+    clearInterval(quietTimer);
     screen.off('display-removed', recoverAfterDisplayRemoval);
+    screen.off('display-metrics-changed', recoverAfterDisplayRemoval);
+    screen.off('display-added', broadcastSettings);
     if (journal && !journal.isDestroyed()) journal.close();
     if (game && !game.isDestroyed()) game.close();
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
   });
 
   await petWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
-  showPet();
-  refreshMenu();
+  windowsReady = true;
+  applyDesktop('refresh');
+  if (!settings.settings().onboardingSeen) openSettings();
 }
 
 const testData = process.env.NAGISA_TEST_DATA;
@@ -392,6 +682,7 @@ if (!app.isPackaged && testData && isAbsolute(testData)) {
 if (app.requestSingleInstanceLock()) {
   app.whenReady().then(startPet).catch((error) => {
     console.error('桌宠启动失败', error);
+    dialog.showErrorBox('桌宠启动失败', '无法加载桌宠数据，请确认应用数据目录可读写后重试。');
     app.quit();
   });
 } else {
@@ -399,4 +690,4 @@ if (app.requestSingleInstanceLock()) {
 }
 
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => tray?.destroy());
+app.on('will-quit', () => { globalShortcut.unregisterAll(); tray?.destroy(); });

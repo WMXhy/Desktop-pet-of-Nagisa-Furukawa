@@ -7,8 +7,8 @@ export function useCareSnapshot() {
   const updates = useRef(0);
 
   function updateSnapshot(snapshot: CareSnapshot) {
-    setCare((previous) => previous?.ok && (!snapshot.ok || snapshot.state.revision < previous.state.revision)
-      ? previous : snapshot);
+    setCare((previous) => previous && (snapshot.epoch < previous.epoch || (snapshot.epoch === previous.epoch &&
+      previous.ok && (!snapshot.ok || snapshot.state.revision < previous.state.revision))) ? previous : snapshot);
   }
 
   async function loadCare() {
@@ -22,7 +22,7 @@ export function useCareSnapshot() {
       console.error('无法读取养成状态', error);
       setReadStatus((previous) => previous === 'ready' ? previous : 'failed');
       if (updates.current === before) updateSnapshot({ ok: false, message: '暂时无法读取养成状态，请重试。',
-        durations: activityDurations(), gameBusy: false });
+        epoch: 0, durations: activityDurations(), gameBusy: false });
     }
   }
 

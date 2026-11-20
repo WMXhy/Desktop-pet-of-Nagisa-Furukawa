@@ -10,6 +10,7 @@ const toyDetails = {
 } satisfies Record<ToyId, { icon: string; use: string; mode: DangoMode; play: string }>;
 
 type Props = {
+  epoch: number;
   state: Care;
   busy: boolean;
   gameBusy: boolean;
@@ -17,7 +18,7 @@ type Props = {
   openGame: (mode: DangoMode) => void;
 };
 
-export function ToyShop({ state, busy, submit, openGame }: Props) {
+export function ToyShop({ state, busy, submit, openGame, epoch }: Props) {
   return h('section', { 'aria-label': '玩具店' }, toyIds.map((id) => {
     const { name, price } = toys[id];
     const { icon, use, mode, play } = toyDetails[id];
@@ -33,7 +34,7 @@ export function ToyShop({ state, busy, submit, openGame }: Props) {
           ? h('button', { type: 'button', 'aria-label': `现在一起玩 · ${play}`, disabled: busy, onClick: () => openGame(mode) }, '现在一起玩')
           : h('button', { type: 'button', 'aria-label': `购买${name}`, 'aria-describedby': `toy-quote-${id}`,
             disabled: busy || Boolean(unavailable),
-            onClick: () => { void submit(() => window.pet.buyToy(id, state.revision), `已买下${name}。`); },
+            onClick: () => { void submit(() => window.pet.buyToy(id, state.revision, epoch), `已买下${name}。`); },
           }, `花 ${price} 币购买`),
       ),
     );

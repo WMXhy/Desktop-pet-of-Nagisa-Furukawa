@@ -5,12 +5,22 @@ import { join } from 'node:path';
 const margin = 24;
 const positionFile = () => join(app.getPath('userData'), 'pet-position.json');
 
-export function homePosition(size: number): Point {
-  const area = screen.getPrimaryDisplay().workArea;
+export function homePosition(size: number, area = screen.getPrimaryDisplay().workArea): Point {
   return {
     x: area.x + Math.max(0, area.width - size - margin),
     y: area.y + Math.max(0, area.height - size - margin),
   };
+}
+
+export function petBounds(size: number, displayId: number | null, current?: Rectangle): Rectangle {
+  const target = displayId === null ? (current ? screen.getDisplayMatching(current) : screen.getPrimaryDisplay())
+    : screen.getAllDisplays().find(({ id }) => id === displayId) ?? screen.getPrimaryDisplay();
+  const area = target.workArea;
+  const length = Math.max(1, Math.min(size, area.width, area.height));
+  const point = current && screen.getDisplayMatching(current).id === target.id
+    ? { x: current.x + current.width - length, y: current.y + current.height - length } : homePosition(length, area);
+  return { x: Math.max(area.x, Math.min(point.x, area.x + area.width - length)),
+    y: Math.max(area.y, Math.min(point.y, area.y + area.height - length)), width: length, height: length };
 }
 
 export function restorePosition(size: number): Point {

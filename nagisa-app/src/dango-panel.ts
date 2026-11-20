@@ -83,8 +83,25 @@ export function DangoPanel() {
   const [mode, setMode] = useState<DangoMode>('classic');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [reducedMotion, setReducedMotion] = useState(false);
   const requesting = useRef(false);
+  const currentEpoch = useRef(0);
+  currentEpoch.current = care?.epoch ?? 0;
   const playingMode = stage.phase === 'ready' ? mode : stage.round.mode;
+
+  useEffect(() => {
+    if (!care?.epoch) return;
+    setStage({ phase: 'ready' });
+    setMode('classic');
+    setError('');
+  }, [care?.epoch]);
+
+  useEffect(() => {
+    let received = false;
+    const off = window.pet.onSettingsChanged((view) => { received = true; setReducedMotion(view.effective.reducedMotion); });
+    void window.pet.readSettings().then((view) => { if (!received) setReducedMotion(view.effective.reducedMotion); }).catch(console.warn);
+    return off;
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -135,7 +152,8 @@ export function DangoPanel() {
   function start() {
     if (!state || readStatus !== 'ready' || unavailable || (stage.phase !== 'ready' && stage.phase !== 'result')) return;
     void submit(async () => {
-      const result = await window.pet.startDango(state.revision, playingMode);
+      const result = await window.pet.startDango(state.revision, playingMode, care.epoch);
+      if (care.epoch !== currentEpoch.current) return;
       if (result.ok === false) {
         setError(result.message);
         void loadCare();
@@ -148,9 +166,11 @@ export function DangoPanel() {
 
   function pick(slot: DangoSlot) {
     if (stage.phase !== 'choose' || (stage.picked !== undefined && stage.picked !== slot)) return;
+    const epoch = currentEpoch.current;
     void submit(async () => {
       setStage({ ...stage, picked: slot });
       const result = await window.pet.pickDango(stage.round.id, slot);
+      if (epoch !== currentEpoch.current) return;
       if (result.ok === false) setError(result.message);
       else setStage({ phase: 'result', round: result.round });
     }, '未收到结果，请重试刚才的选择。');
@@ -166,7 +186,7 @@ export function DangoPanel() {
 
   const starting = stage.phase === 'ready' || stage.phase === 'result';
 
-  return h('main', { className: 'dango-panel', 'aria-labelledby': 'dango-title' },
+  return h('main', { className: 'dango-panel', 'aria-labelledby': 'dango-title', 'data-reduced-motion': reducedMotion || undefined },
     h('header', null, h('h1', { id: 'dango-title' }, title),
       h('span', { className: 'dango-energy' }, state ? `精力 ${state.energy}` : '精力 —')),
     stage.phase === 'ready' && h('div', { className: 'dango-modes', role: 'radiogroup', 'aria-label': '选择玩法' },

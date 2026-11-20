@@ -15,7 +15,7 @@ type DangoSession = { preview: DangoPreview; target: DangoSlot; owner: symbol; c
 type CommitOptions = { completed?: ActivityRecord; writeFailure?: string; announceRelationship?: boolean;
   afterSave?: () => Pick<CareChange, 'dangoStarted' | 'dangoCompleted'> | void };
 
-export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void) {
+export function createCareRuntime(directory: string, fast: boolean, publish: (change: CareChange) => void, epoch = 0) {
   const store = createCareStore(directory);
   const durations = activityDurations(fast);
   const pending: OnlineTime = { hungerMs: 0, idleMs: 0 };
@@ -29,7 +29,7 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
   let lastDango: { owner: symbol; result: DangoResult } | undefined;
 
   function snapshot(): CareSnapshot {
-    return { ...store.snapshot(), durations, gameBusy: Boolean(dango), warning };
+    return { ...store.snapshot(), epoch, durations, gameBusy: Boolean(dango), warning };
   }
 
   function schedule() {
@@ -224,13 +224,13 @@ export function createCareRuntime(directory: string, fast: boolean, publish: (ch
     startDango,
     pickDango,
     leaveDango,
-    close() {
+    close(flush = true) {
       stopped = true;
       clearInterval(tick);
       clearTimeout(deadline);
       powerMonitor.off('suspend', suspend);
       powerMonitor.off('resume', resume);
-      advance(Date.now(), { force: true, announce: false, retry: true });
+      if (flush) advance(Date.now(), { force: true, announce: false, retry: true });
       dango = undefined;
     },
   };

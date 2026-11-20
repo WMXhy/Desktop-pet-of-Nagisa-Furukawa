@@ -1,14 +1,17 @@
 {
   "name": "nagisa-app",
   "productName": "Nagisa Desktop Pet",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "古河渚 Windows 桌宠",
   "private": true,
   "author": "WMXhy",
   "main": ".webpack/main",
   "scripts": {
+    "prestart": "node scripts/build-windows-helper.cjs",
     "start": "electron-forge start",
+    "prepackage": "node scripts/build-windows-helper.cjs package",
     "package": "electron-forge package",
+    "premake": "node scripts/build-windows-helper.cjs package",
     "make": "electron-forge make",
     "typecheck": "tsc --noEmit"
   },

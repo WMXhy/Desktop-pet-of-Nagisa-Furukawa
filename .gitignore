@@ -8,5 +8,6 @@
 # Dependencies and build output
 node_modules/
 .webpack/
+.windows-helper/
 out/
 *.log

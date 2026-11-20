@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeAtomic } from './atomic-file';
 import { activityLogLimit, careVersion, hungerInterval, idleInterval, newCare, upgradeCare,
   type Care, type CareV4, type CareV5, type LegacyCare, type CareReadResult, type CareResponse } from './care';
 import { affectionLimit, dailyAffectionLimit, milestones } from './relationship';
@@ -76,46 +77,49 @@ function validRelationship(data: Record<string, unknown>): boolean {
   });
 }
 
-function readSave(file: string): SaveFile {
-  try {
-    const data: unknown = JSON.parse(readFileSync(file, 'utf8'));
-    if (record(data)) {
-      if (integer(data.version) && data.version > careVersion) return { kind: 'newer' };
-      if (validCommonFields(data)) {
-        const { version, inventory, ownedToys } = data;
-        const fullInventory = record(inventory) && integer(inventory.redBeanBread) && integer(inventory.dangoSnack);
-        const hasLegacyActivities = version === 2 || (version === 3 && fullInventory);
-        if (version === 1 || (hasLegacyActivities && validActivityFields(data, true))) {
-          const original = data as LegacyCare;
+export function decodeCare(data: unknown): Exclude<SaveFile, { kind: 'missing' }> {
+  if (record(data)) {
+    if (integer(data.version) && data.version > careVersion) return { kind: 'newer' };
+    if (validCommonFields(data)) {
+      const { version, inventory, ownedToys } = data;
+      const fullInventory = record(inventory) && integer(inventory.redBeanBread) && integer(inventory.dangoSnack);
+      const hasLegacyActivities = version === 2 || (version === 3 && fullInventory);
+      if (version === 1 || (hasLegacyActivities && validActivityFields(data, true))) {
+        const original = data as LegacyCare;
+        return { kind: 'valid', state: upgradeCare(original), original };
+      }
+      if ((version === 4 || version === 5 || version === careVersion) && fullInventory &&
+          integer(data.studyPoints) && validActivityFields(data, false)) {
+        if (version === 4) {
+          const original = data as CareV4;
           return { kind: 'valid', state: upgradeCare(original), original };
         }
-        if ((version === 4 || version === 5 || version === careVersion) && fullInventory &&
-            integer(data.studyPoints) && validActivityFields(data, false)) {
-          if (version === 4) {
-            const original = data as CareV4;
+        if (record(ownedToys) && typeof ownedToys.dangoPlush === 'boolean' && typeof ownedToys.miniStage === 'boolean') {
+          if (version === 5) {
+            const original = data as CareV5;
             return { kind: 'valid', state: upgradeCare(original), original };
           }
-          if (record(ownedToys) && typeof ownedToys.dangoPlush === 'boolean' && typeof ownedToys.miniStage === 'boolean') {
-            if (version === 5) {
-              const original = data as CareV5;
-              return { kind: 'valid', state: upgradeCare(original), original };
-            }
-            if (validRelationship(data)) return { kind: 'valid', state: data as Care };
-          }
+          if (validRelationship(data)) return { kind: 'valid', state: data as Care };
         }
       }
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
-    console.warn('养成存档无法读取', file, error);
   }
+
   return { kind: 'invalid' };
 }
 
+export function readSave(file: string): SaveFile {
+  try {
+    return decodeCare(JSON.parse(readFileSync(file, 'utf8')));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+    console.warn('养成存档无法读取', file, error);
+    return { kind: 'invalid' };
+  }
+}
+
 function writeSave(file: string, state: Care | LegacyCare): void {
-  const temporaryFile = `${file}.tmp`;
-  writeFileSync(temporaryFile, JSON.stringify(state), { encoding: 'utf8', flush: true });
-  renameSync(temporaryFile, file);
+  writeAtomic(file, JSON.stringify(state));
 }
 
 export function createCareStore(directory: string) {

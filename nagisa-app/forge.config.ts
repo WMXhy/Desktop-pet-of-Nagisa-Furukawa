@@ -18,11 +18,12 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: iconPath,
+    extraResource: process.platform === 'win32' ? [join(__dirname, '.windows-helper', 'package', 'NagisaDesktopState.exe')] : [],
   },
   rebuildConfig: {},
   makers: [
     new MakerSquirrel({ setupIcon: `${iconPath}.ico` }),
-    new MakerZIP({}, ['darwin']),
+    new MakerZIP({}, ['darwin', 'win32']),
     new MakerRpm({}),
     new MakerDeb({}),
   ],

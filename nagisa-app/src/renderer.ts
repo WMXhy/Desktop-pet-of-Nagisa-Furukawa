@@ -41,7 +41,10 @@ import { DangoPanel } from './dango-panel';
 import { Backpack, SnackShop } from './food-panel';
 import { foodArt, type Frame } from './food-art';
 import { RelationshipPanel } from './relationship-panel';
-import { companionThreshold, greetingLines, practiceLineMs, practiceLines, rehearsalFrameMs, relationshipRank } from './relationship';
+import { SettingsPanel } from './settings-panel';
+import { defaultSettings, type JournalSection, type SettingsView } from './settings';
+import { playChime } from './sound';
+import { companionThreshold, greetingLines, practiceLines, rehearsalFrameMs, relationshipRank } from './relationship';
 import { OwnedToys, ToyShop } from './toy-panel';
 import { activityRules, dangoUnavailable, dramaClubStudyPoints, specialLineStudyPoints, specialStudyLine,
   type Activity, type ActivityKind, type ActivityRecord, type CareChange, type CareResponse, type FoodId } from './care';
@@ -64,6 +67,7 @@ const smile: readonly Frame[] = [[wave3, 1200]];
 const encourage: readonly Frame[] = [[open, 1200]];
 const hugFrames: readonly Frame[] = [hug0, hug1, hug2, hug3].map((image, index) => [image, dangoHugFrameMs[index]]);
 type PetInteraction = 'hug' | 'line';
+type BubbleKind = 'manual' | 'completion' | 'automatic';
 
 function completionMessage(completed: ActivityRecord, studyPoints: number): string {
   const previous = studyPoints - completed.actual.studyPoints;
@@ -87,10 +91,15 @@ function Pet() {
   useEffect(() => {
     let timer = 0;
     let bubbleTimer = 0;
+    let bubbleKind: BubbleKind = 'manual';
+    let preferences = defaultSettings;
+    let quiet = false;
+    let nextAutoFrom = performance.now();
     let playingInteraction = false;
     let activity: Activity | null = null;
     let gameBusy = false;
     let revision = -1;
+    let epoch = 0;
     let studyPoints = 0;
     let affection = 0;
     let previousGreeting = '';
@@ -110,20 +119,31 @@ function Pet() {
       timer = window.setTimeout(callback, delay);
     }
 
-    function play(frames: readonly Frame[], index = 0, onFrame?: (index: number) => void) {
-      const next = frames[index];
-      if (!next) {
+    function play(frames: readonly Frame[], onFrame?: (index: number) => void, representative = frames.length - 1) {
+      let total = 0;
+      const ends = frames.map(([, duration]) => total += duration);
+      const started = performance.now();
+      let previous = -1;
+      function step() {
+        const elapsed = performance.now() - started;
+        if (elapsed < total) {
+          const index = ends.findIndex((end) => elapsed < end);
+          setFrame(frames[preferences.reducedMotion ? representative : index][0]);
+          for (let crossed = previous + 1; crossed <= index; crossed += 1) onFrame?.(crossed);
+          previous = index;
+          const interval = 1000 / preferences.fps;
+          const next = Math.min(total, Math.ceil(ends[index] / interval) * interval);
+          later(step, Math.max(1, next - (performance.now() - started)));
+          return;
+        }
+        for (let crossed = previous + 1; crossed < frames.length; crossed += 1) onFrame?.(crossed);
         eating = false;
         activePetInteraction = undefined;
         if (feedQueue.length && !document.hidden) playNextFood();
         else if (pendingPetInteraction && !activity && !gameBusy && !document.hidden) playPetInteraction(pendingPetInteraction);
         else restorePose();
-        return;
       }
-      const [image, duration] = next;
-      setFrame(image);
-      onFrame?.(index);
-      later(() => play(frames, index + 1, onFrame), duration);
+      step();
     }
 
     function restorePose() {
@@ -139,20 +159,25 @@ function Pet() {
       setFrame(open);
       later(() => {
         playingClose = !gameBusy && affection >= companionThreshold && ++idleOpportunities % 3 === 0;
-        play(playingClose ? closeIdle : blink);
+        if (playingClose) play(closeIdle, undefined, 2);
+        else if (preferences.reducedMotion) restorePose();
+        else play(blink);
       }, 3000 + Math.random() * 3000);
     }
 
-    function showBubble(text: string, bubbleDuration: number) {
-      setBubble(text);
+    function showBubble(text: string, kind: BubbleKind = 'manual') {
       window.clearTimeout(bubbleTimer);
-      bubbleTimer = window.setTimeout(() => setBubble(''), bubbleDuration);
+      bubbleKind = kind;
+      const allowed = kind === 'manual' || (!quiet && (kind !== 'completion' || preferences.completionBubble));
+      setBubble(allowed ? text : '');
+      if (allowed && text) bubbleTimer = window.setTimeout(() => setBubble(''), preferences.bubbleSeconds * 1000);
+      if (text && !quiet && preferences.soundEffects) playChime(preferences.volume);
     }
 
-    function interact(frames: readonly Frame[], text: string, bubbleDuration: number) {
+    function interact(frames: readonly Frame[], text: string, kind: BubbleKind = 'manual') {
       playingInteraction = true;
       playingClose = false;
-      showBubble(text, bubbleDuration);
+      showBubble(text, kind);
       play(frames);
     }
 
@@ -161,46 +186,69 @@ function Pet() {
       if (!id) return;
       eating = true;
       const art = foodArt[id];
-      interact(art.frames, art.message, 2500);
+      interact(art.frames, art.message);
     }
 
     function playPetInteraction(kind: PetInteraction) {
       pendingPetInteraction = undefined;
       activePetInteraction = kind;
-      if (kind === 'hug') interact(hugFrames, '团子玩偶软软的。', dangoHugMs);
+      if (kind === 'hug') interact(hugFrames, '团子玩偶软软的。');
       else {
         const line = practiceLines[practiceIndex];
         practiceIndex = (practiceIndex + 1) % practiceLines.length;
-        interact(rehearsal, line, practiceLineMs);
+        interact(rehearsal, line);
       }
     }
 
     async function requestGreeting() {
       if (playingInteraction || document.hidden || greetingPending || performance.now() < nextGreetingAt) return;
       greetingPending = true;
+      const startedEpoch = epoch;
       nextGreetingAt = performance.now() + 2000;
       try {
         const result = await window.pet.greetToday();
-        if (playingInteraction || document.hidden) return;
+        if (startedEpoch !== epoch || playingInteraction || document.hidden) return;
         if (result.ok === false) {
-          interact(wave, result.message, 4000);
+          interact(wave, result.message);
           return;
         }
         const current = result.state.revision >= revision ? result.state : { affection, studyPoints };
-        const rank = relationshipRank(current.affection).id;
-        const lines: string[] = [...greetingLines[rank]];
-        if (!activity && current.studyPoints >= specialLineStudyPoints && result.gained === null) {
-          if (rank === 'initial') lines.unshift(specialStudyLine);
-          else lines.push(specialStudyLine);
-        }
-        const line = lines[(lines.indexOf(previousGreeting) + 1) % lines.length];
-        previousGreeting = line;
-        interact(wave, result.gained === null ? line : `${line} 好感 +${result.gained}`, 4000);
+        const line = nextLine(current.affection, !activity && result.gained === null ? current.studyPoints : 0);
+        nextAutoFrom = performance.now();
+        interact(wave, result.gained === null ? line : `${line} 好感 +${result.gained}`);
       } catch (error) {
         console.error('问候请求失败', error);
-        if (!document.hidden && !playingInteraction) interact(wave, '问候未保存，请再点一次。', 4000);
+        if (startedEpoch === epoch && !document.hidden && !playingInteraction) interact(wave, '问候未保存，请再点一次。');
       } finally { greetingPending = false; }
     }
+
+    function nextLine(value: number, points: number) {
+      const rank = relationshipRank(value).id;
+      const lines: string[] = [...greetingLines[rank]];
+      if (points >= specialLineStudyPoints) {
+        if (rank === 'initial') lines.unshift(specialStudyLine);
+        else lines.push(specialStudyLine);
+      }
+      const line = lines[(lines.indexOf(previousGreeting) + 1) % lines.length];
+      previousGreeting = line;
+      return line;
+    }
+
+    function updateSettings(view: SettingsView) {
+      if (preferences.autoGreeting !== view.effective.autoGreeting) nextAutoFrom = performance.now();
+      preferences = view.effective;
+      quiet = view.presentation.quiet;
+      if (bubbleKind !== 'manual' && (quiet || (bubbleKind === 'completion' && !preferences.completionBubble))) setBubble('');
+    }
+    let receivedSettings = false;
+    const unsubscribeSettings = window.pet.onSettingsChanged((view) => { receivedSettings = true; updateSettings(view); });
+    void window.pet.readSettings().then((view) => { if (!receivedSettings) updateSettings(view); }).catch(console.warn);
+    const automatic = window.setInterval(() => {
+      if (!preferences.autoGreeting || quiet || document.hidden || activity || gameBusy || playingInteraction || greetingPending ||
+          relationshipRank(affection).id === 'initial' || performance.now() - nextAutoFrom < preferences.greetingMinutes * 60_000) return;
+      nextAutoFrom = performance.now();
+      interact(wave, nextLine(affection, studyPoints), 'automatic');
+    }, 1000);
 
     greet.current = () => { void requestGreeting(); };
     const unsubscribeFed = window.pet.onFed((id) => {
@@ -216,38 +264,48 @@ function Pet() {
     }
     const unsubscribeHug = window.pet.onHug(() => requestPetInteraction('hug'));
     const unsubscribeLine = window.pet.onListenToLine(() => requestPetInteraction('line'));
+    const unsubscribePreview = window.pet.onPreviewAnimation(() => {
+      if (!document.hidden && !playingInteraction && !activity && !gameBusy) interact(wave, '今天也一起加油吧。');
+    });
 
     function updateCare({ snapshot, completed, dangoStarted, dangoCompleted }: CareChange) {
-      if (!snapshot.ok || snapshot.state.revision < revision) return;
+      if (snapshot.epoch < epoch || !snapshot.ok || (snapshot.epoch === epoch && snapshot.state.revision < revision)) return;
+      const replaced = snapshot.epoch !== epoch;
+      epoch = snapshot.epoch;
       revision = snapshot.state.revision;
       studyPoints = snapshot.state.studyPoints;
       affection = snapshot.state.affection;
       const changedActivity = activity?.id !== snapshot.state.activeActivity?.id;
       activity = snapshot.state.activeActivity;
       gameBusy = snapshot.gameBusy;
+      if (replaced) {
+        lastCompletion = undefined;
+        previousGreeting = '';
+        onVisibilityChange(false);
+      }
       if (completed && completed.id !== lastCompletion) {
         lastCompletion = completed.id;
         if (document.hidden) return;
         const text = completionMessage(completed, studyPoints);
         if (completed.kind === 'bakery') {
           playingInteraction = true;
-          showBubble('', 0);
-          play(workDone, 0, (index) => {
-            if (index === 1) showBubble(text, 2500);
+          showBubble('', 'completion');
+          play(workDone, (index) => {
+            if (index === 1) showBubble(text, 'completion');
           });
-        } else interact(completed.kind === 'work_props' ? [activityFrames.work_props[3]] : smile, text, 2500);
+        } else interact(completed.kind === 'work_props' ? [activityFrames.work_props[3]] : smile, text, 'completion');
       } else if (dangoCompleted && dangoCompleted.id !== lastCompletion) {
         lastCompletion = dangoCompleted.id;
         if (document.hidden) return;
         if (dangoCompleted.mode === 'lines') {
-          if (dangoCompleted.correct) interact(smile, '这句接得真好！', 2500);
-          else interact(encourage, '再看看台本提示吧。', 2500);
+          if (dangoCompleted.correct) interact(smile, '这句接得真好！');
+          else interact(encourage, '再看看台本提示吧。');
         } else if (dangoCompleted.correct) {
-          interact(smile, dangoCompleted.mode === 'plush' ? '找到团子玩偶啦！' : '猜中了！就是这颗团子。', 2500);
-        } else interact(encourage, '刚刚差一点，再看一次吧。', 2500);
+          interact(smile, dangoCompleted.mode === 'plush' ? '找到团子玩偶啦！' : '猜中了！就是这颗团子。');
+        } else interact(encourage, '刚刚差一点，再看一次吧。');
       } else if (dangoStarted === 'lines' && !document.hidden) {
-        interact(activityFrames.rehearse, '下一句交给你了。', 2600);
-      } else if ((changedActivity || (gameBusy && playingClose)) && !playingInteraction) restorePose();
+        interact(activityFrames.rehearse, '下一句交给你了。');
+      } else if (!replaced && (changedActivity || (gameBusy && playingClose)) && !playingInteraction) restorePose();
     }
     const unsubscribeCare = window.pet.onCareChanged(updateCare);
 
@@ -257,7 +315,7 @@ function Pet() {
       });
     }
 
-    function onVisibilityChange() {
+    function onVisibilityChange(refresh = true) {
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
       eating = false;
@@ -265,10 +323,11 @@ function Pet() {
       feedQueue.length = 0;
       setBubble('');
       restorePose();
-      if (!document.hidden) readCare();
+      if (!document.hidden && refresh) readCare();
     }
 
-    document.addEventListener('visibilitychange', onVisibilityChange);
+    const visibilityChanged = () => onVisibilityChange();
+    document.addEventListener('visibilitychange', visibilityChanged);
     restorePose();
     readCare();
     return () => {
@@ -276,10 +335,13 @@ function Pet() {
       unsubscribeFed();
       unsubscribeHug();
       unsubscribeLine();
+      unsubscribePreview();
       unsubscribeCare();
+      unsubscribeSettings();
+      window.clearInterval(automatic);
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+      document.removeEventListener('visibilitychange', visibilityChanged);
     };
   }, []);
 
@@ -331,6 +393,26 @@ function Journal() {
   const [feedback, setFeedback] = useState('');
   const [page, setPage] = useState<keyof typeof journalTabs>('journal');
   const requesting = useRef(false);
+  const currentEpoch = useRef(0);
+  currentEpoch.current = care?.epoch ?? 0;
+  const [section, setSection] = useState<{ id: JournalSection }>();
+
+  useEffect(() => {
+    const select = (id: JournalSection) => { setPage('journal'); setSection({ id }); };
+    const initial = window.location.hash.split('?')[1];
+    if (initial === 'feed' || initial === 'bakery' || initial === 'study') select(initial);
+    return window.pet.onJournalSection(select);
+  }, []);
+
+  useEffect(() => {
+    if (!section || !care?.ok || page !== 'journal') return;
+    const target = section.id === 'feed' ? document.getElementById('backpack-heading')
+      : document.getElementById(`activity-option-${section.id}`) ?? document.getElementById('activities-heading');
+    target?.scrollIntoView({ block: 'start' });
+    setSection(undefined);
+  }, [section, care, page]);
+
+  useEffect(() => { setFeedback(''); }, [care?.epoch]);
 
   function openGame(mode?: DangoMode) {
     void window.pet.openDangoGame(mode).catch((error) => {
@@ -341,27 +423,32 @@ function Journal() {
 
   async function submit(request: () => Promise<CareResponse>, message: string, onSuccess?: () => void) {
     if (!care?.ok || requesting.current) return;
+    const epoch = care.epoch;
     requesting.current = true;
     setBusy(true);
     setFeedback('');
     try {
       const result = await request();
+      if (epoch !== currentEpoch.current) return;
       const state = result.state;
-      if (state) setCare((previous) => previous?.ok && state.revision >= previous.state.revision
+      if (state) setCare((previous) => previous?.ok && previous.epoch === epoch && state.revision >= previous.state.revision
         ? { ...previous, state } : previous);
       setFeedback(result.ok === false ? result.message : message);
       if (result.ok) onSuccess?.();
     } catch (error) {
       console.error('手账无法确认操作结果', error);
       await loadCare();
-      setFeedback('未收到操作结果，请查看已重新读取的养成状态。');
+      if (epoch === currentEpoch.current) setFeedback('未收到操作结果，请查看已重新读取的养成状态。');
     } finally {
       requesting.current = false;
       setBusy(false);
     }
   }
 
-  const heading = h('h1', null, '渚的手账');
+  const heading = h('header', { className: 'journal-heading' }, h('h1', null, '渚的手账'),
+    h('button', { type: 'button', onClick: () => {
+      void window.pet.openSettings().catch(() => setFeedback('暂时无法打开设置。'));
+    } }, '设置'));
   if (!care?.ok) {
     return h('main', { className: 'journal' }, heading,
       h('p', { role: 'status' }, care?.ok === false ? care.message : '正在读取养成存档…'),
@@ -387,9 +474,9 @@ function Journal() {
     h('p', { className: 'care-feedback', role: 'status' }, feedback),
     notice && h('p', { className: 'care-notice' }, notice),
     care.warning && h('p', { className: 'care-notice', role: 'status' }, care.warning),
-    page === 'snacks' ? h(SnackShop, { state, gameBusy, busy, submit })
-      : page === 'toys' ? h(ToyShop, { state, gameBusy, busy, submit, openGame })
-      : page === 'relationship' ? h(RelationshipPanel, { state, gameBusy, busy, submit }) : h('div', null,
+    page === 'snacks' ? h(SnackShop, { key: care.epoch, epoch: care.epoch, state, gameBusy, busy, submit })
+      : page === 'toys' ? h(ToyShop, { key: care.epoch, epoch: care.epoch, state, gameBusy, busy, submit, openGame })
+      : page === 'relationship' ? h(RelationshipPanel, { key: care.epoch, state, gameBusy, busy, submit }) : h('div', { key: care.epoch },
       h('section', { className: 'journal-game', 'aria-labelledby': 'minigames-heading' },
         h('div', null, h('h2', { id: 'minigames-heading' }, '小游戏'),
           h('p', { id: 'dango-entry-detail' }, gameReason ?? `每局消耗 ${dangoEnergyCost} 精力。`)),
@@ -397,9 +484,9 @@ function Journal() {
           onClick: () => openGame(),
         }, '和渚玩猜团子'),
       ),
-      h(Backpack, { state, gameBusy, busy, submit }),
-      h(OwnedToys, { state, gameBusy, busy, submit, openGame }),
-      h(ActivityPanel, { state, durations: care.durations, gameBusy, busy, submit }),
+      h(Backpack, { epoch: care.epoch, state, gameBusy, busy, submit }),
+      h(OwnedToys, { epoch: care.epoch, state, gameBusy, busy, submit, openGame }),
+      h(ActivityPanel, { epoch: care.epoch, state, durations: care.durations, gameBusy, busy, submit }),
     ),
   );
 }
@@ -407,8 +494,10 @@ function Journal() {
 const container = document.getElementById('root');
 if (!container) throw new Error('页面缺少 root 容器');
 
-const journalPage = window.location.hash === '#journal';
+const journalPage = window.location.hash.split('?')[0] === '#journal';
 const dangoPage = window.location.hash === '#dango-game';
+const settingsPage = window.location.hash === '#settings';
 if (journalPage) document.title = '渚的手账';
 if (dangoPage) document.title = '猜团子';
-createRoot(container).render(dangoPage ? h(DangoPanel) : journalPage ? h(Journal) : h(Pet));
+if (settingsPage) document.title = '桌宠设置';
+createRoot(container).render(settingsPage ? h(SettingsPanel) : dangoPage ? h(DangoPanel) : journalPage ? h(Journal) : h(Pet));

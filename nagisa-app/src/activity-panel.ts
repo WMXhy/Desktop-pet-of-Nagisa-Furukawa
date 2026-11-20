@@ -31,8 +31,8 @@ function cancellationMessage({ kind, reward }: Activity): string {
   return `现在结束${label}吗？${spent}${forfeited}`;
 }
 
-export function ActivityPanel({ state, durations, gameBusy, busy, submit }: {
-  state: Care; durations: ActivityDurations; gameBusy: boolean; busy: boolean; submit: Submit;
+export function ActivityPanel({ state, durations, gameBusy, busy, submit, epoch }: {
+  state: Care; durations: ActivityDurations; gameBusy: boolean; busy: boolean; submit: Submit; epoch: number;
 }) {
   const [confirmation, setConfirmation] = useState<{ activity: Activity; revision: number }>();
   const [, tick] = useState(0);
@@ -49,10 +49,10 @@ export function ActivityPanel({ state, durations, gameBusy, busy, submit }: {
     const { label, cost, reward } = activityRules[kind];
     const description = kind === 'rest' ? `预计恢复 ${Math.min(reward.energy, 100 - state.energy)} 点精力`
       : `消耗 ${cost} 精力，完成后${rewards(reward, true)}`;
-    return h('div', { className: 'activity-row', key: kind },
+    return h('div', { className: 'activity-row', key: kind, id: `activity-option-${kind}` },
       h('div', null, h('strong', null, label), h('p', null, unavailable ?? description)),
       h('button', { type: 'button', disabled: busy || Boolean(unavailable),
-        onClick: () => { void submit(() => window.pet.startActivity(kind, state.revision), `已开始${label}。`); } },
+        onClick: () => { void submit(() => window.pet.startActivity(kind, state.revision, epoch), `已开始${label}。`); } },
       `${label} ${durationLabel(durations[kind])}`),
     );
   }
@@ -77,7 +77,7 @@ export function ActivityPanel({ state, durations, gameBusy, busy, submit }: {
       h('p', null, cancellationMessage(confirmation.activity)),
       h('button', { type: 'button', disabled: busy, onClick: () => setConfirmation(undefined) }, '返回手账'),
       h('button', { type: 'button', disabled: busy, onClick: async () => {
-        await submit(() => window.pet.cancelActivity(confirmation.activity.id, confirmation.revision), '已取消活动。');
+        await submit(() => window.pet.cancelActivity(confirmation.activity.id, confirmation.revision, epoch), '已取消活动。');
         setConfirmation(undefined);
       } }, '确认取消'),
     ),

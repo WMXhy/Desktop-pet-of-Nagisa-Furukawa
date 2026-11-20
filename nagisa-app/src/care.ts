@@ -150,7 +150,7 @@ export function newCare(day = localDay()): Care {
 
 type CareUnavailable = { ok: false; message: string };
 export type CareReadResult = { ok: true; state: Care; notice?: string } | CareUnavailable;
-export type CareSnapshot = CareReadResult & { durations: ActivityDurations; gameBusy: boolean; warning?: string };
+export type CareSnapshot = CareReadResult & { epoch: number; durations: ActivityDurations; gameBusy: boolean; warning?: string };
 export type CareChange = {
   snapshot: CareSnapshot;
   completed?: ActivityRecord;

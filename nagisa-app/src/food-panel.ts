@@ -4,7 +4,7 @@ import { canClaimBread, foodIds, foods, foodUnavailable, previewFood, purchaseUn
 import { foodArt } from './food-art';
 
 type Submit = (request: () => Promise<CareResponse>, message: string, onSuccess?: () => void) => Promise<void>;
-type Props = { state: Care; gameBusy: boolean; busy: boolean; submit: Submit };
+type Props = { state: Care; gameBusy: boolean; busy: boolean; submit: Submit; epoch: number };
 
 function effects(id: FoodId): string {
   const { fullness, mood, affection } = foods[id];
@@ -18,11 +18,11 @@ function feedPreview(state: Care, id: FoodId): string {
     `好感 +${next.affection - state.affection}`].filter(Boolean).join(' · ');
 }
 
-function feed(state: Care, id: FoodId, submit: Submit, onSuccess?: () => void) {
-  return submit(() => window.pet.feedFood(id, state.revision), `已喂一个${foods[id].name}。`, onSuccess);
+function feed(state: Care, id: FoodId, epoch: number, submit: Submit, onSuccess?: () => void) {
+  return submit(() => window.pet.feedFood(id, state.revision, epoch), `已喂一个${foods[id].name}。`, onSuccess);
 }
 
-export function Backpack({ state, gameBusy, busy, submit }: Props) {
+export function Backpack({ state, gameBusy, busy, submit, epoch }: Props) {
   const stocked = foodIds.filter((id) => id === 'bread' || state.inventory[id] > 0);
   return h('section', { className: 'backpack', 'aria-labelledby': 'backpack-heading' },
     h('h2', { id: 'backpack-heading' }, '背包'),
@@ -37,15 +37,15 @@ export function Backpack({ state, gameBusy, busy, submit }: Props) {
         ),
         h('button', { type: 'button', disabled: busy || Boolean(unavailable), 'aria-describedby': detailId,
           'aria-label': id === 'bread' ? '喂给渚' : `喂给渚：${foods[id].name}`,
-          onClick: () => { void feed(state, id, submit); } }, '喂给渚'),
+          onClick: () => { void feed(state, id, epoch, submit); } }, '喂给渚'),
       );
     }),
     canClaimBread(state) && h('button', { type: 'button', disabled: busy, className: 'emergency-bread',
-      onClick: () => { void submit(() => window.pet.claimBread(state.revision), '已领取一个应急小面包。'); } }, '领取应急小面包'),
+      onClick: () => { void submit(() => window.pet.claimBread(state.revision, epoch), '已领取一个应急小面包。'); } }, '领取应急小面包'),
   );
 }
 
-export function SnackShop({ state, gameBusy, busy, submit }: Props) {
+export function SnackShop({ state, gameBusy, busy, submit, epoch }: Props) {
   const [quantities, setQuantities] = useState<Record<FoodId, string>>({ bread: '1', redBeanBread: '1', dangoSnack: '1' });
   const [purchase, setPurchase] = useState<{ id: FoodId; quantity: number }>();
   const receipt = useRef<HTMLDivElement>(null);
@@ -59,7 +59,7 @@ export function SnackShop({ state, gameBusy, busy, submit }: Props) {
       h('p', { role: 'status' }, `${foods[purchase.id].name} ×${purchase.quantity} 已放入背包。`),
       h('button', { type: 'button', disabled: busy || Boolean(feedReason),
         'aria-describedby': feedReason ? 'quick-feed-reason' : undefined,
-        onClick: () => { void feed(state, purchase.id, submit, () => setPurchase(undefined)); } }, '现在喂给她'),
+        onClick: () => { void feed(state, purchase.id, epoch, submit, () => setPurchase(undefined)); } }, '现在喂给她'),
       feedReason && h('p', { id: 'quick-feed-reason' }, feedReason),
     ),
     foodIds.map((id) => {
@@ -88,7 +88,7 @@ export function SnackShop({ state, gameBusy, busy, submit }: Props) {
           h('button', { type: 'button', disabled: busy || Boolean(unavailable), 'aria-describedby': quote,
             onClick: () => {
               setPurchase(undefined);
-              void submit(() => window.pet.buyFood(id, quantity, state.revision), '', () => setPurchase({ id, quantity }));
+              void submit(() => window.pet.buyFood(id, quantity, state.revision, epoch), '', () => setPurchase({ id, quantity }));
             },
           }, Number.isSafeInteger(total) && total > 0 ? `花 ${total} 币购买` : '购买'),
         ),
