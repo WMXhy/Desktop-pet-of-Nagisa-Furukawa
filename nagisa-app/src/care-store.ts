@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { careVersion, feedBread, newCare, type Care, type CareReadResult, type FeedResponse } from './care';
+import { activityLogLimit, careVersion, hungerInterval, idleInterval, isActivityKind, newCare, upgradeCare,
+  type Care, type CareV1, type CareReadResult, type CareResponse } from './care';
 
-type SaveFile = { kind: 'valid'; state: Care } | { kind: 'missing' | 'invalid' | 'newer' };
+type SaveFile = { kind: 'valid'; state: Care; original?: CareV1 } | { kind: 'missing' | 'invalid' | 'newer' };
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -18,11 +19,33 @@ function validDay(value: unknown): boolean {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
-function validCare(data: Record<string, unknown>): data is Care {
-  return data.version === careVersion && integer(data.revision) && integer(data.coins) &&
+function validCommonFields(data: Record<string, unknown>): boolean {
+  return integer(data.revision) && integer(data.coins) &&
     integer(data.fullness, 100) && integer(data.energy, 100) && integer(data.mood, 100) &&
     integer(data.affection, 300) && record(data.daily) && validDay(data.daily.day) &&
     integer(data.daily.gained, 12) && record(data.inventory) && integer(data.inventory.bread);
+}
+
+function reward(value: unknown): boolean {
+  return record(value) && integer(value.coins, 1_000_000) && integer(value.energy, 100) &&
+    typeof value.mood === 'number' && Number.isInteger(value.mood) && Math.abs(value.mood) <= 100 &&
+    integer(value.affection, 300);
+}
+
+function activityIdentity(value: Record<string, unknown>): boolean {
+  return typeof value.id === 'string' && value.id.trim().length > 0 && isActivityKind(value.kind);
+}
+
+function validActivity(value: unknown): boolean {
+  return value === null || (record(value) && activityIdentity(value) && integer(value.startedAt, 8.64e15) &&
+    integer(value.endsAt, 8.64e15) && value.endsAt > value.startedAt && reward(value.reward));
+}
+
+function validV2Fields(data: Record<string, unknown>): boolean {
+  return validActivity(data.activeActivity) && Array.isArray(data.activityLog) && data.activityLog.length <= activityLogLimit &&
+    data.activityLog.every((entry: unknown) => record(entry) && activityIdentity(entry) && integer(entry.endedAt, 8.64e15) &&
+      (entry.outcome === 'completed' || entry.outcome === 'cancelled') && reward(entry.actual)) &&
+    record(data.online) && integer(data.online.hungerMs, hungerInterval - 1) && integer(data.online.idleMs, idleInterval - 1);
 }
 
 function readSave(file: string): SaveFile {
@@ -30,7 +53,13 @@ function readSave(file: string): SaveFile {
     const data: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (record(data)) {
       if (integer(data.version) && data.version > careVersion) return { kind: 'newer' };
-      if (validCare(data)) return { kind: 'valid', state: data };
+      if (validCommonFields(data)) {
+        if (data.version === 1) {
+          const original = data as CareV1;
+          return { kind: 'valid', state: upgradeCare(original), original };
+        }
+        if (data.version === careVersion && validV2Fields(data)) return { kind: 'valid', state: data as Care };
+      }
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
@@ -39,7 +68,7 @@ function readSave(file: string): SaveFile {
   return { kind: 'invalid' };
 }
 
-function writeSave(file: string, state: Care): void {
+function writeSave(file: string, state: Care | CareV1): void {
   const temporaryFile = `${file}.tmp`;
   writeFileSync(temporaryFile, JSON.stringify(state), { encoding: 'utf8', flush: true });
   renameSync(temporaryFile, file);
@@ -51,7 +80,17 @@ export function createCareStore(directory: string) {
 
   function load(): CareReadResult {
     const main = readSave(mainFile);
-    if (main.kind === 'valid') return { ok: true, state: main.state };
+    if (main.kind === 'valid') {
+      if (!main.original) return { ok: true, state: main.state };
+      try {
+        writeSave(backupFile, main.original);
+        writeSave(mainFile, main.state);
+        return { ok: true, state: main.state };
+      } catch (error) {
+        console.warn('养成存档无法升级', error);
+        return { ok: false, message: '无法升级养成存档，请重试。' };
+      }
+    }
     if (main.kind === 'newer') return { ok: false, message: '养成存档来自较新版本，请升级桌宠。' };
 
     const backup = readSave(backupFile);
@@ -76,23 +115,26 @@ export function createCareStore(directory: string) {
 
   let current = load();
   return {
+    snapshot: () => current,
     read(): CareReadResult {
       if (!current.ok) current = load();
       return current;
     },
-    feed(revision: number): FeedResponse {
+    commit(candidate: Care): CareResponse {
       if (!current.ok) return current;
-      const result = feedBread(current.state, revision);
-      if (!result.ok) return result;
+      if (current.state.revision === Number.MAX_SAFE_INTEGER) {
+        return { ok: false, state: current.state, message: '存档已达到可记录的操作次数上限。' };
+      }
+      const state = { ...candidate, revision: current.state.revision + 1 };
       try {
         writeSave(backupFile, current.state);
-        writeSave(mainFile, result.state);
+        writeSave(mainFile, state);
       } catch (error) {
         console.warn('养成存档无法提交', error);
-        return { ok: false, state: current.state, message: '存档写入失败，面包已保留。' };
+        return { ok: false, state: current.state, message: '存档写入失败，请重试。' };
       }
-      current = { ...current, state: result.state };
-      return result;
+      current = { ...current, state };
+      return { ok: true, state };
     },
   };
 }

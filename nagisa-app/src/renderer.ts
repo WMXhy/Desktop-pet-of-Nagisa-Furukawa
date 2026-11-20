@@ -13,13 +13,25 @@ import eat2 from './assets/eat/002.png';
 import eat3 from './assets/eat/003.png';
 import eat4 from './assets/eat/004.png';
 import bread from './assets/items/bread.png';
-import { breadUnavailable, fullnessAfterBread, type CareReadResult } from './care';
+import rest0 from './assets/rest/000.png';
+import rest1 from './assets/rest/001.png';
+import bakery0 from './assets/work_bakery/000.png';
+import bakery1 from './assets/work_bakery/001.png';
+import bakery2 from './assets/work_bakery/002.png';
+import bakery3 from './assets/work_bakery/003.png';
+import workDone0 from './assets/work_done/000.png';
+import workDone1 from './assets/work_done/001.png';
+import { ActivityPanel } from './activity-panel';
+import { breadUnavailable, fullnessAfterBread, type Activity, type CareChange, type CareResponse, type CareSnapshot } from './care';
 import './index.css';
 
 type Frame = readonly [image: string, duration: number];
 const blink: readonly Frame[] = [[half, 80], [shut, 100], [half, 80]];
 const wave: readonly Frame[] = [[wave0, 180], [wave1, 180], [wave2, 240], [wave3, 200]];
 const eat: readonly Frame[] = [[eat0, 180], [eat1, 240], [eat2, 220], [eat3, 500], [eat4, 360]];
+const rest: readonly Frame[] = [[rest0, 1600], [rest1, 1600]];
+const bakery: readonly Frame[] = [[bakery0, 500], [bakery1, 500], [bakery2, 400], [bakery3, 1500]];
+const workDone: readonly Frame[] = [[workDone0, 350], [workDone1, 850]];
 
 function Pet() {
   const [frame, setFrame] = useState(open);
@@ -31,56 +43,96 @@ function Pet() {
     let timer = 0;
     let bubbleTimer = 0;
     let playingInteraction = false;
+    let activity: Activity | null = null;
+    let revision = -1;
+    let lastCompletion: string | undefined;
 
     function later(callback: () => void, delay: number) {
       window.clearTimeout(timer);
       timer = window.setTimeout(callback, delay);
     }
 
-    function play(frames: readonly Frame[], index = 0) {
+    function play(frames: readonly Frame[], index = 0, onFrame?: (index: number) => void) {
       const next = frames[index];
       if (!next) {
-        idle();
+        restorePose();
         return;
       }
       const [image, duration] = next;
       setFrame(image);
-      later(() => play(frames, index + 1), duration);
+      onFrame?.(index);
+      later(() => play(frames, index + 1, onFrame), duration);
     }
 
-    function idle() {
+    function restorePose() {
+      window.clearTimeout(timer);
       playingInteraction = false;
+      if (document.hidden) { setFrame(open); return; }
+      if (activity) {
+        play(activity.kind === 'rest' ? rest : bakery);
+        return;
+      }
       setFrame(open);
-      if (!document.hidden) later(() => play(blink), 3000 + Math.random() * 3000);
+      later(() => play(blink), 3000 + Math.random() * 3000);
+    }
+
+    function showBubble(text: string, bubbleDuration: number) {
+      setBubble(text);
+      window.clearTimeout(bubbleTimer);
+      bubbleTimer = window.setTimeout(() => setBubble(''), bubbleDuration);
     }
 
     function interact(frames: readonly Frame[], text: string, bubbleDuration: number) {
       playingInteraction = true;
-      setBubble(text);
-      window.clearTimeout(bubbleTimer);
-      bubbleTimer = window.setTimeout(() => setBubble(''), bubbleDuration);
+      showBubble(text, bubbleDuration);
       play(frames);
     }
 
     greet.current = () => {
       if (!playingInteraction && !document.hidden) interact(wave, '今天也一起加油吧。', 4000);
     };
-    const unsubscribe = window.pet.onFed(() => {
+    const unsubscribeFed = window.pet.onFed(() => {
       if (!document.hidden) interact(eat, '面包好香，谢谢你。', 2500);
     });
+
+    function updateCare({ snapshot, completed }: CareChange) {
+      if (!snapshot.ok || snapshot.state.revision < revision) return;
+      revision = snapshot.state.revision;
+      const changedActivity = activity?.id !== snapshot.state.activeActivity?.id;
+      activity = snapshot.state.activeActivity;
+      if (completed?.kind === 'bakery' && completed.id !== lastCompletion) {
+        lastCompletion = completed.id;
+        if (document.hidden) return;
+        playingInteraction = true;
+        showBubble('', 0);
+        play(workDone, 0, (index) => {
+          if (index === 1) showBubble(`团子币 +${completed.actual.coins}`, 2500);
+        });
+      } else if (changedActivity && !playingInteraction) restorePose();
+    }
+    const unsubscribeCare = window.pet.onCareChanged(updateCare);
+
+    function readCare() {
+      void window.pet.readCare().then((snapshot) => updateCare({ snapshot })).catch((error) => {
+        console.warn('角色无法读取活动状态', error);
+      });
+    }
 
     function onVisibilityChange() {
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
       setBubble('');
-      idle();
+      restorePose();
+      if (!document.hidden) readCare();
     }
 
     document.addEventListener('visibilitychange', onVisibilityChange);
-    idle();
+    restorePose();
+    readCare();
     return () => {
       greet.current = undefined;
-      unsubscribe();
+      unsubscribeFed();
+      unsubscribeCare();
       window.clearTimeout(timer);
       window.clearTimeout(bubbleTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -127,38 +179,49 @@ function Pet() {
 }
 
 function Journal() {
-  const [care, setCare] = useState<CareReadResult>();
+  const [care, setCare] = useState<CareSnapshot>();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
-  const feeding = useRef(false);
+  const requesting = useRef(false);
+
+  function updateSnapshot(snapshot: CareSnapshot) {
+    setCare((previous) => previous?.ok && (!snapshot.ok || snapshot.state.revision < previous.state.revision)
+      ? previous : snapshot);
+  }
 
   async function loadCare() {
     try {
-      setCare(await window.pet.readCare());
+      updateSnapshot(await window.pet.readCare());
     } catch (error) {
       console.error('手账无法读取养成状态', error);
-      setCare({ ok: false, message: '手账暂时无法读取养成状态，请重试。' });
+      setCare((previous) => previous?.ok ? previous : { ok: false, message: '手账暂时无法读取养成状态，请重试。',
+        durations: { rest: 300_000, bakery: 180_000 } });
     }
   }
 
-  useEffect(() => { void loadCare(); }, []);
+  useEffect(() => {
+    const unsubscribe = window.pet.onCareChanged(({ snapshot }) => updateSnapshot(snapshot));
+    void loadCare();
+    return unsubscribe;
+  }, []);
 
-  async function feed() {
-    if (!care?.ok || feeding.current || breadUnavailable(care.state)) return;
-    feeding.current = true;
+  async function submit(request: () => Promise<CareResponse>, message: string) {
+    if (!care?.ok || requesting.current) return;
+    requesting.current = true;
     setBusy(true);
     setFeedback('');
     try {
-      const result = await window.pet.feedBread(care.state.revision);
-      if (result.ok === false && !result.state) setCare(result);
-      else setCare({ ...care, state: result.state });
-      setFeedback(result.ok === false ? result.message : '已喂一个小面包。');
+      const result = await request();
+      const state = result.state;
+      if (state) setCare((previous) => previous?.ok && state.revision >= previous.state.revision
+        ? { ...previous, state } : previous);
+      setFeedback(result.ok === false ? result.message : message);
     } catch (error) {
-      console.error('手账无法确认喂食结果', error);
+      console.error('手账无法确认操作结果', error);
       await loadCare();
-      setFeedback('未收到喂食结果，已重新读取养成状态。');
+      setFeedback('未收到操作结果，请查看已重新读取的养成状态。');
     } finally {
-      feeding.current = false;
+      requesting.current = false;
       setBusy(false);
     }
   }
@@ -190,12 +253,14 @@ function Journal() {
           h('strong', null, `小面包 × ${state.inventory.bread}`),
           h('p', { id: 'bread-effect' }, unavailable ?? `饱食 ${state.fullness} → ${fullnessAfterBread(state.fullness)}`),
         ),
-        h('button', { type: 'button', disabled: busy || Boolean(unavailable), 'aria-describedby': 'bread-effect', onClick: feed },
-          busy ? '正在喂食…' : '喂给渚'),
+        h('button', { type: 'button', disabled: busy || Boolean(unavailable), 'aria-describedby': 'bread-effect',
+          onClick: () => { void submit(() => window.pet.feedBread(state.revision), '已喂一个小面包。'); } }, '喂给渚'),
       ),
     ),
     h('p', { className: 'care-feedback', role: 'status' }, feedback),
     notice && h('p', { className: 'care-notice' }, notice),
+    care.warning && h('p', { className: 'care-notice', role: 'status' }, care.warning),
+    h(ActivityPanel, { state, durations: care.durations, busy, submit }),
   );
 }
 

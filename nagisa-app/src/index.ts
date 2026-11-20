@@ -1,6 +1,9 @@
 import { app, BrowserWindow, Menu, nativeImage, screen, Tray, type Point } from 'electron';
+import { mkdirSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import appIcon from './assets/app-icon.png';
-import { createCareStore } from './care-store';
+import { isActivityKind } from './care';
+import { createCareRuntime } from './care-runtime';
 import { homePosition, restorePosition, savePosition } from './pet-position';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -13,7 +16,6 @@ const maxCoordinate = 0x7fffffff;
 let tray: Tray;
 
 async function startPet(): Promise<void> {
-  const care = createCareStore(app.getPath('userData'));
   const icon = nativeImage.createFromDataURL(appIcon);
   const { x, y } = restorePosition(size);
   const petWindow = new BrowserWindow({
@@ -101,6 +103,16 @@ async function startPet(): Promise<void> {
   }
 
   let journal: BrowserWindow | undefined;
+  const care = createCareRuntime(app.getPath('userData'), !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1', (change) => {
+    if (!contents.isDestroyed() && contents.getURL()) contents.send('care:changed', change);
+    if (journal && !journal.isDestroyed()) journal.webContents.send('care:changed', change);
+  });
+  app.once('before-quit', () => care.close());
+  ipc.handle('care:read', (event) => {
+    if (event.senderFrame !== contents.mainFrame) throw new Error('无效的角色请求');
+    return care.read();
+  });
+
   function openJournal() {
     if (journal && !journal.isDestroyed()) {
       if (journal.isMinimized()) journal.restore();
@@ -112,7 +124,7 @@ async function startPet(): Promise<void> {
       title: '渚的手账',
       icon,
       width: 420,
-      height: 320,
+      height: 480,
       show: false,
       autoHideMenuBar: true,
       webPreferences: {
@@ -137,6 +149,16 @@ async function startPet(): Promise<void> {
         contents.send('care:fed');
       }
       return result;
+    });
+    journalContents.ipc.handle('care:start', (event, kind: unknown, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || !isActivityKind(kind) ||
+          !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的活动请求');
+      return care.start(kind, revision);
+    });
+    journalContents.ipc.handle('care:cancel', (event, id: unknown, revision: number) => {
+      if (event.senderFrame !== journalContents.mainFrame || typeof id !== 'string' || !id.trim() ||
+          !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的取消请求');
+      return care.cancel(id, revision);
     });
     window.once('ready-to-show', () => window.show());
     window.on('closed', () => {
@@ -200,6 +222,12 @@ async function startPet(): Promise<void> {
   await petWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
   showPet();
   refreshMenu();
+}
+
+const testData = process.env.NAGISA_TEST_DATA;
+if (!app.isPackaged && testData && isAbsolute(testData)) {
+  mkdirSync(testData, { recursive: true });
+  app.setPath('userData', testData);
 }
 
 if (app.requestSingleInstanceLock()) {

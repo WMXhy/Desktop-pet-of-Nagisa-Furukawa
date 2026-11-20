@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld('pet', {
   cancel: () => ipcRenderer.send('pet:cancel'),
   readCare: () => ipcRenderer.invoke('care:read'),
   feedBread: (revision) => ipcRenderer.invoke('care:feed', revision),
+  startActivity: (kind, revision) => ipcRenderer.invoke('care:start', kind, revision),
+  cancelActivity: (id, revision) => ipcRenderer.invoke('care:cancel', id, revision),
+  onCareChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, change: import('./care').CareChange) => callback(change);
+    ipcRenderer.on('care:changed', listener);
+    return () => { ipcRenderer.removeListener('care:changed', listener); };
+  },
   onFed: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('care:fed', listener);

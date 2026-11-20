@@ -75,7 +75,8 @@ body,
   font-weight: 600;
 }
 
-.backpack h2 {
+.backpack h2,
+.care-activities h2 {
   margin: 0 0 4px;
   font-size: 16px;
 }
@@ -116,4 +117,59 @@ body,
   background: #eee1d4;
   color: #6f5446;
   cursor: default;
+}
+
+.care-activities {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e7d5c5;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.activity-row p,
+.activity-confirm p {
+  margin: 2px 0;
+  color: #6f5446;
+  font-size: 12px;
+}
+
+.activity-confirm {
+  padding: 8px 10px;
+  margin: 4px 0;
+  border-radius: 8px;
+  background: #f6e7d7;
+}
+
+.activity-confirm button {
+  margin: 6px 8px 0 0;
+}
+
+.activity-history h3 {
+  margin: 10px 0 4px;
+  font-size: 14px;
+}
+
+.activity-history ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-history li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid #e7d5c5;
+}
+
+.activity-history time {
+  color: #6f5446;
+  font-size: 12px;
 }
