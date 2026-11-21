@@ -69,8 +69,10 @@ function Check-Install([string]$Path,[string]$Version){
     Require (Test-Path -LiteralPath "$Path/.nagisa-install") 'Install manifest missing.'
     Require ((Get-Item -LiteralPath "$Path/$exe").VersionInfo.ProductVersion -eq $Version) 'Application version mismatches install version.'
     Require (Test-Path -LiteralPath $shortcut) 'Start menu shortcut missing.'
-    $shell=New-Object -ComObject WScript.Shell
-    Require ($shell.CreateShortcut($shortcut).TargetPath -eq "$Path\$exe") 'Start menu target mismatches installation.'
+    $shell=New-Object -ComObject Shell.Application
+    $folder=$shell.NameSpace([IO.Path]::GetDirectoryName($shortcut))
+    $link=$folder.ParseName([IO.Path]::GetFileName($shortcut))
+    Require ($link.ExtendedProperty('System.Link.TargetParsingPath') -eq "$Path\$exe") 'Start menu target mismatches installation.'
 }
 function Check-Launch([string]$Path) {
     Start-Process -FilePath $shortcut
