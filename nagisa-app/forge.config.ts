@@ -18,6 +18,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: iconPath,
+    electronZipDir: process.env.NAGISA_ELECTRON_ZIP_DIR || undefined,
     extraResource: process.platform === 'win32' ? [join(__dirname, '.windows-helper', 'package', 'NagisaDesktopState.exe')] : [],
   },
   rebuildConfig: {},
