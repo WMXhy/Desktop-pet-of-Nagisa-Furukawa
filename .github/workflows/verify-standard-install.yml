@@ -52,9 +52,20 @@ jobs:
           $ErrorActionPreference='Stop'
           $log="$env:PUBLIC/NagisaAcceptance/result.txt"
           try {
-            $user=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-            if($env:USERNAME -ne 'NagisaAcceptance'){throw 'The test process did not get the isolated user profile.'}
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $user=[Security.Principal.WindowsPrincipal]::new($identity)
+            $name=($identity.Name -split '\\')[-1]
+            if($name -ne 'NagisaAcceptance'){throw 'The test process did not get the isolated user token.'}
             if($user.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'The isolated test user is an administrator.'}
+            $homePath=[Environment]::GetFolderPath('UserProfile')
+            $expectedHome=[IO.Path]::GetFullPath("$env:SystemDrive/Users/NagisaAcceptance")
+            if($homePath -ne $expectedHome){throw 'The test process did not get the isolated Windows profile.'}
+            $env:USERNAME=$name
+            $env:USERPROFILE=$homePath
+            $env:LOCALAPPDATA=[Environment]::GetFolderPath('LocalApplicationData')
+            $env:APPDATA=[Environment]::GetFolderPath('ApplicationData')
+            $env:TEMP=(New-Item -ItemType Directory -Path "$env:LOCALAPPDATA/Temp" -Force).FullName
+            $env:TMP=$env:TEMP
             $env:PATH="$env:SystemRoot\System32;$env:SystemRoot"
             if(Get-Command node.exe -ErrorAction SilentlyContinue){throw 'Node remains available on PATH.'}
             $setup="$env:PUBLIC/NagisaAcceptance/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe"
