@@ -36,7 +36,7 @@ try {
     $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     $build = New-Item -ItemType Directory -Path (Join-Path $app "out\installer\v$version") -Force
     $engine = Join-Path $build.FullName 'NagisaInstaller.exe'
-    & $compiler /nologo /optimize+ /codepage:65001 /platform:anycpu /target:exe /reference:Microsoft.CSharp.dll "/out:$engine" 'installer\engine.cs'
+    & $compiler /nologo /optimize+ /codepage:65001 /platform:anycpu /target:exe "/out:$engine" 'installer\engine.cs'
     if ($LASTEXITCODE) { throw 'Could not build the Windows installer helper.' }
     $bytes = (Get-ChildItem -LiteralPath $payload -Recurse -File | Measure-Object -Property Length -Sum).Sum + 16MB
     $size = [int64][Math]::Ceiling($bytes / 1KB)
