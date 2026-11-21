@@ -46,7 +46,12 @@ export function migrateInstalledLogin() {
 }
 
 export function handleSquirrelStartup(): boolean {
-  if (!installed) return false;
+  if (!installed) {
+    if (process.platform === 'win32' && app.isPackaged && existsSync(join(versionDirectory, '.nagisa-install'))) {
+      app.setAppUserModelId('WMXhy.NagisaDesktopPet');
+    }
+    return false;
+  }
   app.setAppUserModelId(`com.squirrel.${basename(root).replace(/ /g, '')}.${basename(appExe, '.exe').replace(/ /g, '')}`);
   switch (process.argv[1]) {
     case '--squirrel-install':
