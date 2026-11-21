@@ -12,10 +12,11 @@ function subscribe<T>(channel: string, callback: (value: T) => void) {
 }
 
 contextBridge.exposeInMainWorld('pet', {
-  start: (x, y) => ipcRenderer.send('pet:start', x, y),
-  move: (x, y) => ipcRenderer.send('pet:move', x, y),
-  finish: (x, y) => ipcRenderer.invoke('pet:finish', x, y),
-  cancel: () => ipcRenderer.send('pet:cancel'),
+  start: (id, x, y) => ipcRenderer.send('pet:start', id, x, y),
+  move: (id, x, y) => ipcRenderer.send('pet:move', id, x, y),
+  finish: (id, x, y) => ipcRenderer.invoke('pet:finish', id, x, y),
+  cancel: (id) => ipcRenderer.send('pet:cancel', id),
+  onPickupChanged: (callback) => subscribe<PickupChange>('pet:pickup', callback),
   readCare: async () => {
     const snapshot = await ipcRenderer.invoke('care:read') as CareSnapshot;
     careEpoch = Math.max(careEpoch, snapshot.epoch);

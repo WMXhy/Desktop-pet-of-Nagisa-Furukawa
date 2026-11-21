@@ -77,48 +77,70 @@ async function startPet(): Promise<void> {
   let quitting = false;
   let desktopState = { fullscreen: false, notificationsAllowed: process.platform !== 'win32' };
   let lastQuiet: boolean | undefined;
-  let gesture: { pointer: Point; origin: Point; dragged: boolean } | undefined;
+  let gesture: { id: number; pointer: Point; origin: Point; dragged: boolean; pose: PickupPose | null; turnX: number } | undefined;
   let greetingClickUntil = 0;
 
-  function updateDrag(screenX: number, screenY: number) {
+  function endGesture() {
+    const ended = gesture;
+    gesture = undefined;
+    greetingClickUntil = 0;
+    if (ended && !contents.isDestroyed()) contents.send('pet:pickup', { id: ended.id, pose: null });
+  }
+
+  function updateDrag(screenX: number, screenY: number, finishing = false) {
     if (!gesture) return;
     const dx = screenX - gesture.pointer.x;
     const dy = screenY - gesture.pointer.y;
     if (Math.hypot(dx, dy) > 5) gesture.dragged = true;
-    if (gesture.dragged && desktopSettings.allowDrag && !desktopSettings.lockPosition) {
+    if (gesture.dragged && desktopSettings.allowDrag && !desktopSettings.lockPosition &&
+        !passThrough && petWindow.isVisible()) {
       const x = Math.round(gesture.origin.x + dx);
       const y = Math.round(gesture.origin.y + dy);
       if (Number.isSafeInteger(x) && Number.isSafeInteger(y) && Math.abs(x) <= 0x7fffffff && Math.abs(y) <= 0x7fffffff) {
         petWindow.setBounds(petBounds(petSize(desktopSettings), desktopSettings.displayId, { ...petWindow.getBounds(), x, y }));
+        if (finishing) return;
+        const fromTurn = screenX - gesture.turnX;
+        const pose = fromTurn >= 6 ? 'right' : fromTurn <= -6 ? 'left' : gesture.pose ?? 'hold';
+        if (pose !== gesture.pose && pose !== 'hold') gesture.turnX = screenX;
+        if (pose === 'right') gesture.turnX = Math.max(gesture.turnX, screenX);
+        if (pose === 'left') gesture.turnX = Math.min(gesture.turnX, screenX);
+        if (pose !== gesture.pose) {
+          gesture.pose = pose;
+          contents.send('pet:pickup', { id: gesture.id, pose });
+        }
       }
     }
   }
 
   const contents = petWindow.webContents;
   const { ipc } = contents;
-  ipc.on('pet:start', (event, screenX: number, screenY: number) => {
-    if (event.senderFrame !== contents.mainFrame || passThrough || !petWindow.isVisible()) return;
-    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
+  ipc.on('pet:start', (event, id: number, screenX: number, screenY: number) => {
+    if (event.senderFrame !== contents.mainFrame || !Number.isSafeInteger(id) || id <= 0) return;
+    if (passThrough || !petWindow.isVisible() || !Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+      contents.send('pet:pickup', { id, pose: null });
+      return;
+    }
     const [x, y] = petWindow.getPosition();
-    greetingClickUntil = 0;
+    endGesture();
     // 使用指针事件发生时的屏幕坐标，避免快速拖动时多条消息读到同一个鼠标位置。
-    gesture = { pointer: { x: screenX, y: screenY }, origin: { x, y }, dragged: false };
+    gesture = { id, pointer: { x: screenX, y: screenY }, origin: { x, y }, dragged: false, pose: null, turnX: screenX };
   });
-  ipc.on('pet:move', (event, screenX: number, screenY: number) => {
-    if (event.senderFrame !== contents.mainFrame || !Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
+  ipc.on('pet:move', (event, id: number, screenX: number, screenY: number) => {
+    if (event.senderFrame !== contents.mainFrame || gesture?.id !== id ||
+        !Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
     updateDrag(screenX, screenY);
   });
-  ipc.handle('pet:finish', (event, screenX: number, screenY: number) => {
-    if (event.senderFrame !== contents.mainFrame || !gesture) return false;
+  ipc.handle('pet:finish', (event, id: number, screenX: number, screenY: number) => {
+    if (event.senderFrame !== contents.mainFrame || !gesture || gesture.id !== id) return false;
     const valid = Number.isFinite(screenX) && Number.isFinite(screenY);
-    if (valid) updateDrag(screenX, screenY);
+    if (valid) updateDrag(screenX, screenY, true);
     const clicked = valid && !gesture.dragged && !passThrough && petWindow.isVisible();
-    greetingClickUntil = clicked ? performance.now() + 2000 : 0;
-    gesture = undefined;
+    endGesture();
+    if (clicked) greetingClickUntil = performance.now() + 2000;
     return clicked;
   });
-  ipc.on('pet:cancel', (event) => {
-    if (event.senderFrame === contents.mainFrame) gesture = undefined;
+  ipc.on('pet:cancel', (event, id: number) => {
+    if (event.senderFrame === contents.mainFrame && gesture?.id === id) endGesture();
   });
 
   function showPet() {
@@ -137,8 +159,7 @@ async function startPet(): Promise<void> {
     if (quitting || !windowsReady || petWindow.isDestroyed()) return;
     const temporarilyHidden = desktopState.fullscreen && desktopSettings.fullscreenQuiet && desktopSettings.fullscreenHide;
     if (userHidden || temporarilyHidden) {
-      gesture = undefined;
-      greetingClickUntil = 0;
+      endGesture();
       if (petWindow.isVisible()) petWindow.hide();
     } else showPet();
     refreshMenu();
@@ -158,10 +179,8 @@ async function startPet(): Promise<void> {
         previewOrigin = undefined;
         if (kind === 'apply') saveNow();
       }
-      if (passThrough !== effective.passThrough) {
-        gesture = undefined;
-        greetingClickUntil = 0;
-      }
+      if (passThrough !== effective.passThrough || (!desktopSettings.lockPosition && effective.lockPosition) ||
+          (desktopSettings.allowDrag && !effective.allowDrag)) endGesture();
       passThrough = effective.passThrough;
       petWindow.setIgnoreMouseEvents(passThrough);
       petWindow.setOpacity(effective.opacity / 100);
@@ -538,8 +557,7 @@ async function startPet(): Promise<void> {
         return { ok: false, message: '替换失败，原有数据已保留。可以重试。' };
       }
       transfer = undefined;
-      gesture = undefined;
-      greetingClickUntil = 0;
+      endGesture();
       interactionUntil = 0;
       care.close(false);
       careEpoch += 1;
@@ -575,8 +593,7 @@ async function startPet(): Promise<void> {
   tray.setToolTip(title);
 
   function recoverPet() {
-    gesture = undefined;
-    greetingClickUntil = 0;
+    endGesture();
     userHidden = false;
     if (passThrough) settings.quick('passThrough', false, true);
     const target = desktopSettings.displayId ?? screen.getPrimaryDisplay().id;

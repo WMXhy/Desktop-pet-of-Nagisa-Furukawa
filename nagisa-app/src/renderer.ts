@@ -6,6 +6,11 @@ import shut from './assets/idle_blink/002.png';
 import close0 from './assets/idle_close/000.png';
 import close1 from './assets/idle_close/001.png';
 import close2 from './assets/idle_close/002.png';
+import pickupHold from './assets/pickup_hold/000.png';
+import pickupLeft from './assets/pickup_left/000.png';
+import pickupLeftSwing from './assets/pickup_left/001.png';
+import pickupRight from './assets/pickup_right/000.png';
+import pickupRightSwing from './assets/pickup_right/001.png';
 import wave0 from './assets/greet/000.png';
 import wave1 from './assets/greet/001.png';
 import wave2 from './assets/greet/002.png';
@@ -66,6 +71,8 @@ const workDone: readonly Frame[] = [[workDone0, 350], [workDone1, 850]];
 const smile: readonly Frame[] = [[wave3, 1200]];
 const encourage: readonly Frame[] = [[open, 1200]];
 const hugFrames: readonly Frame[] = [hug0, hug1, hug2, hug3].map((image, index) => [image, dangoHugFrameMs[index]]);
+const pickupFrames = { hold: [pickupHold], left: [pickupLeft, pickupLeftSwing], right: [pickupRight, pickupRightSwing] };
+const pickupFrameMs = 300;
 type PetInteraction = 'hug' | 'line';
 type BubbleKind = 'manual' | 'completion' | 'automatic';
 
@@ -84,12 +91,28 @@ function completionMessage(completed: ActivityRecord, studyPoints: number): stri
 
 function Pet() {
   const [frame, setFrame] = useState(open);
+  const [pickupFrame, setPickupFrame] = useState<string>();
   const [bubble, setBubble] = useState('');
   const greet = useRef<() => void>(undefined);
-  const activePointer = useRef<number>(undefined);
+  const image = useRef<HTMLImageElement>(null);
+  const activePointer = useRef<{ pointerId: number; id: number }>(undefined);
+  const gestureId = useRef(0);
+  const stopPickup = useRef<() => void>(undefined);
+
+  function releasePointer() {
+    const pressed = activePointer.current;
+    activePointer.current = undefined;
+    if (pressed && image.current?.hasPointerCapture(pressed.pointerId)) {
+      image.current.releasePointerCapture(pressed.pointerId);
+    }
+    return pressed;
+  }
 
   useEffect(() => {
     let timer = 0;
+    let pickupTimer = 0;
+    let pickupPose: PickupPose | null = null;
+    let pickupStarted = 0;
     let bubbleTimer = 0;
     let bubbleKind: BubbleKind = 'manual';
     let preferences = defaultSettings;
@@ -113,6 +136,34 @@ function Pet() {
     let pendingPetInteraction: PetInteraction | undefined;
     let practiceIndex = 0;
     const feedQueue: FoodId[] = [];
+
+    for (const src of Object.values(pickupFrames).flat()) new Image().src = src;
+
+    function drawPickup() {
+      window.clearTimeout(pickupTimer);
+      if (!pickupPose) { setPickupFrame(undefined); return; }
+      const frames = pickupFrames[pickupPose];
+      if (preferences.reducedMotion || frames.length === 1) { setPickupFrame(frames[0]); return; }
+      const elapsed = performance.now() - pickupStarted;
+      const index = Math.floor(elapsed / pickupFrameMs);
+      setPickupFrame(frames[index % frames.length]);
+      const interval = 1000 / preferences.fps;
+      const next = Math.ceil((index + 1) * pickupFrameMs / interval) * interval;
+      pickupTimer = window.setTimeout(drawPickup, Math.max(1, next - elapsed));
+    }
+
+    function displayPickup(pose: PickupPose | null) {
+      pickupPose = pose;
+      pickupStarted = performance.now();
+      drawPickup();
+    }
+
+    stopPickup.current = () => displayPickup(null);
+    const unsubscribePickup = window.pet.onPickupChanged(({ id, pose }) => {
+      if (activePointer.current?.id !== id) return;
+      if (pose === null) releasePointer();
+      displayPickup(pose);
+    });
 
     function later(callback: () => void, delay: number) {
       window.clearTimeout(timer);
@@ -236,7 +287,9 @@ function Pet() {
 
     function updateSettings(view: SettingsView) {
       if (preferences.autoGreeting !== view.effective.autoGreeting) nextAutoFrom = performance.now();
+      const animationChanged = preferences.reducedMotion !== view.effective.reducedMotion || preferences.fps !== view.effective.fps;
       preferences = view.effective;
+      if (pickupPose && animationChanged) drawPickup();
       quiet = view.presentation.quiet;
       if (bubbleKind !== 'manual' && (quiet || (bubbleKind === 'completion' && !preferences.completionBubble))) setBubble('');
     }
@@ -326,12 +379,26 @@ function Pet() {
       if (!document.hidden && refresh) readCare();
     }
 
-    const visibilityChanged = () => onVisibilityChange();
+    function cancelActivePointer() {
+      const pressed = releasePointer();
+      if (pressed) window.pet.cancel(pressed.id);
+    }
+    const visibilityChanged = () => {
+      if (document.hidden) {
+        cancelActivePointer();
+        displayPickup(null);
+      }
+      onVisibilityChange();
+    };
     document.addEventListener('visibilitychange', visibilityChanged);
     restorePose();
     readCare();
     return () => {
       greet.current = undefined;
+      stopPickup.current = undefined;
+      unsubscribePickup();
+      cancelActivePointer();
+      window.clearTimeout(pickupTimer);
       unsubscribeFed();
       unsubscribeHug();
       unsubscribeLine();
@@ -348,30 +415,37 @@ function Pet() {
   function startPointer(event: PointerEvent<HTMLImageElement>) {
     if (event.button !== 0 || !event.isPrimary || activePointer.current !== undefined) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    activePointer.current = event.pointerId;
-    window.pet.start(event.screenX, event.screenY);
+    const id = ++gestureId.current;
+    activePointer.current = { pointerId: event.pointerId, id };
+    window.pet.start(id, event.screenX, event.screenY);
   }
 
   function movePointer(event: PointerEvent<HTMLImageElement>) {
-    if (activePointer.current === event.pointerId) window.pet.move(event.screenX, event.screenY);
+    const pressed = activePointer.current;
+    if (pressed?.pointerId === event.pointerId) window.pet.move(pressed.id, event.screenX, event.screenY);
   }
 
   async function finishPointer(event: PointerEvent<HTMLImageElement>) {
-    if (activePointer.current !== event.pointerId) return;
-    activePointer.current = undefined;
-    if (await window.pet.finish(event.screenX, event.screenY)) greet.current?.();
+    const pressed = activePointer.current;
+    if (pressed?.pointerId !== event.pointerId) return;
+    releasePointer();
+    stopPickup.current?.();
+    if (await window.pet.finish(pressed.id, event.screenX, event.screenY)) greet.current?.();
   }
 
   function cancelPointer(event: PointerEvent<HTMLImageElement>) {
-    if (activePointer.current !== event.pointerId) return;
-    activePointer.current = undefined;
-    window.pet.cancel();
+    const pressed = activePointer.current;
+    if (pressed?.pointerId !== event.pointerId) return;
+    releasePointer();
+    stopPickup.current?.();
+    window.pet.cancel(pressed.id);
   }
 
   return h('div', { className: 'pet-stage' },
     h('img', {
+      ref: image,
       className: 'pet',
-      src: frame,
+      src: pickupFrame ?? frame,
       alt: '古河渚',
       draggable: false,
       onPointerDown: startPointer,

@@ -1,9 +1,13 @@
+type PickupPose = 'hold' | 'left' | 'right';
+type PickupChange = { id: number; pose: PickupPose | null };
+
 interface Window {
   pet: {
-    start(x: number, y: number): void;
-    move(x: number, y: number): void;
-    finish(x: number, y: number): Promise<boolean>;
-    cancel(): void;
+    start(id: number, x: number, y: number): void;
+    move(id: number, x: number, y: number): void;
+    finish(id: number, x: number, y: number): Promise<boolean>;
+    cancel(id: number): void;
+    onPickupChanged(callback: (change: PickupChange) => void): () => void;
     readCare(): Promise<import('./care').CareSnapshot>;
     greetToday(): Promise<import('./care').GreetingResponse>;
     feedBread(revision: number, epoch?: number): Promise<import('./care').CareResponse>;
