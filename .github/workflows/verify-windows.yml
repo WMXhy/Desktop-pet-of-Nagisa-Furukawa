@@ -44,8 +44,16 @@ jobs:
           try {
             $env:NAGISA_ELECTRON_ZIP_DIR = (New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-runtime").FullName
             $version = (Get-Content -LiteralPath 'node_modules/electron/package.json' -Raw | ConvertFrom-Json).version
-            tar.exe -acf "$env:NAGISA_ELECTRON_ZIP_DIR/electron-v${version}-win32-x64.zip" -C 'node_modules/electron/dist' .
-            if ($LASTEXITCODE) { throw 'Could not archive the installed Electron runtime.' }
+            $runtimeName = "electron-v${version}-win32-x64.zip"
+            $upstream = "https://github.com/electron/electron/releases/download/v$version"
+            $runtime = Join-Path $env:NAGISA_ELECTRON_ZIP_DIR $runtimeName
+            $checksums = Join-Path $env:NAGISA_ELECTRON_ZIP_DIR 'SHASUMS256.txt'
+            curl.exe --fail --location --retry 3 --silent --show-error "$upstream/$runtimeName" -o $runtime
+            if ($LASTEXITCODE) { throw 'Could not download the official Electron runtime.' }
+            curl.exe --fail --location --retry 3 --silent --show-error "$upstream/SHASUMS256.txt" -o $checksums
+            if ($LASTEXITCODE) { throw 'Could not get the Electron SHA-256 manifest.' }
+            $manifest = Get-Content -LiteralPath $checksums | Where-Object { $_.EndsWith(' *'+$runtimeName) -or $_.EndsWith(' '+$runtimeName) } | Select-Object -First 1
+            if(!$manifest -or (($manifest -split '\s+')[0] -ne (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash)) { throw 'Official Electron ZIP digest mismatch.' }
             $env:NAGISA_FORGE_EXTRACT_MODULE = (Resolve-Path -LiteralPath 'node_modules/@electron/packager/dist/unzip.js').Path
             $hook = (Resolve-Path -LiteralPath '../.github/acceptance/forge-extract.cjs').Path
             $env:NODE_OPTIONS = '--require=' + $hook.Replace('\','/')
@@ -56,6 +64,7 @@ jobs:
             Copy-Item -LiteralPath 'out/make/squirrel.windows/x64/Nagisa Desktop Pet-1.0.2 Setup.exe' -Destination $setup
             Get-Item -LiteralPath $setup | Select-Object Name,Length | Format-List
             Get-FileHash -LiteralPath $setup -Algorithm SHA256 | Format-List
+            Write-Host "::notice title=Setup identity::$((Get-Item -LiteralPath $setup).Length) bytes | $((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash)"
           } catch {
             Write-Host "::error title=Build error::$($_.Exception.Message)"
             if(Test-Path -LiteralPath $log) {
@@ -73,7 +82,7 @@ jobs:
             curl.exe --fail --location --retry 3 --silent --show-error $url -o $zip
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             $extract = New-Item -ItemType Directory -Path (Join-Path $qa "portable-$version")
-            tar.exe -xf $zip -C $extract.FullName
+            & "$env:SystemRoot/System32/tar.exe" -xf $zip -C $extract.FullName
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
       - name: Build an internal 1.0.0 installer from the published app
