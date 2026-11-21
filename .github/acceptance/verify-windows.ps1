@@ -151,9 +151,14 @@ function Seed([int]$Coins,[int]$Scale) {
 function Snapshot {
     $data = Get-Content -LiteralPath $save -Raw | ConvertFrom-Json
     $settings = Get-Content -LiteralPath $prefs -Raw | ConvertFrom-Json
+    $place = Get-Content -LiteralPath $position -Raw | ConvertFrom-Json
     [ordered]@{ coins=$data.coins; affection=$data.affection; toy=$data.ownedToys.dangoPlush; bread=$data.inventory.bread
-        scale=$settings.preferences.scale; position=(Get-Content -LiteralPath $position -Raw | ConvertFrom-Json) } |
+        scale=$settings.preferences.scale; position=[ordered]@{display=$place.displayId;x=$place.dx;y=$place.dy} } |
         ConvertTo-Json -Compress -Depth 6
+}
+function Compare-Save([string]$Before,[string]$Message) {
+    $after=Snapshot
+    Require ($after -eq $Before) "$Message Before $Before. After $after."
 }
 function Boot-Previous([string]$Path) {
     $proc=Run-WithoutNode $Path
@@ -182,11 +187,12 @@ Stop-TestPet
 Seed 48 125
 $cleanSnapshot=Snapshot
 Uninstall
+Compare-Save $cleanSnapshot 'Uninstall changed the existing save.'
 Install $Setup $current -Silent
 Start-Installed
-Require ((Snapshot) -eq $cleanSnapshot) 'Reinstall did not preserve the saved progress.'
+Compare-Save $cleanSnapshot 'Reinstall did not preserve the saved progress.'
 Uninstall
-Write-Host 'PASS Fresh Setup, single instance, Start menu, Windows Apps entry, uninstall and reinstall'
+Write-Host '::notice title=Passed first Setup and reinstall::Fresh Setup, single instance, Start menu, Windows Apps entry, uninstall and reinstall'
 
 foreach($scenario in @(@{Version='1.0.0';File=$Portable100;Coins=51;Scale=125;Enabled=$true},
                        @{Version='1.0.1';File=$Portable101;Coins=72;Scale=150;Enabled=$false})) {
@@ -198,10 +204,10 @@ foreach($scenario in @(@{Version='1.0.0';File=$Portable100;Coins=51;Scale=125;En
     Install $Setup $current -Silent
     Rename-Item -LiteralPath $scenario.File -NewName ((Split-Path $scenario.File -Leaf)+'-archived')
     Start-Installed
-    Require ((Snapshot) -eq $before) "Portable data changed for $($scenario.Version)."
+    Compare-Save $before "Portable data changed for $($scenario.Version)."
     Verify-Login $scenario.Enabled
     Uninstall
-    Write-Host "PASS Portable $($scenario.Version) -> Setup, default data, position, preferences, moved ZIP, login state"
+    Write-Host "::notice title=Passed portable upgrade::Portable $($scenario.Version) -> Setup, default data, position, preferences, moved ZIP, login state"
 }
 
 foreach($enabled in @($true,$false)) {
@@ -212,7 +218,7 @@ foreach($enabled in @($true,$false)) {
     $before=Snapshot
     Install $Setup $current -Silent
     Start-Installed
-    Require ((Snapshot) -eq $before) 'Installed upgrade changed the previous save.'
+    Compare-Save $before 'Installed upgrade changed the previous save.'
     Verify-Login $enabled
     if($enabled) {
         Stop-TestPet
@@ -222,5 +228,5 @@ foreach($enabled in @($true,$false)) {
         Require (@(PetProcesses).Count -eq 1) 'Started more than one application from the login target.'
     }
     Uninstall
-    Write-Host "PASS Internal 1.0.0 Setup -> v1.0.2 Setup, login enabled=$enabled, uninstall removed startup"
+    Write-Host "::notice title=Passed installed upgrade::Internal 1.0.0 Setup -> v1.0.2 Setup, login enabled=$enabled, uninstall removed startup"
 }

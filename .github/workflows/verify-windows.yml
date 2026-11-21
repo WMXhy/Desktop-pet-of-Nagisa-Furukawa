@@ -72,6 +72,12 @@ jobs:
             }
             throw
           }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v1.0.2-windows-setup
+          path: ${{ runner.temp }}/nagisa-acceptance/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe
+          compression-level: 0
+          retention-days: 5
       - name: Fetch both historical portable releases
         shell: pwsh
         run: |
@@ -118,9 +124,3 @@ jobs:
             }
             throw
           }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: v1.0.2-verified-windows-setup
-          path: ${{ runner.temp }}/nagisa-acceptance/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe
-          compression-level: 0
-          retention-days: 5
