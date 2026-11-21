@@ -1,0 +1,95 @@
+name: v1.0.3 NSIS installation acceptance
+on:
+  push:
+    branches: ['codex/v1.0.3-acceptance']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+      - name: Install locked dependencies and typecheck
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          npm.cmd ci --no-audit --no-fund
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+          npm.cmd run typecheck
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+      - name: Build the NSIS candidate and a higher-version test package
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          $PSNativeCommandUseErrorActionPreference=$false
+          try {
+            $root=(New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-v103").FullName
+            $nsis="$root/nsis.zip"
+            $ProgressPreference='SilentlyContinue'
+            curl.exe -fsSL --retry 2 --max-time 115 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip' -o $nsis
+            if($LASTEXITCODE){throw 'Failed to download NSIS 3.13.'}
+            if((Get-FileHash -LiteralPath $nsis -Algorithm SHA256).Hash -ne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8'){throw 'NSIS checksum mismatch.'}
+            Expand-Archive -LiteralPath $nsis -DestinationPath "$root/nsis"
+            $env:NAGISA_MAKENSIS="$root/nsis/nsis-3.13/makensis.exe"
+            $env:NAGISA_ELECTRON_ZIP_DIR=$root
+            $v=(Get-Content -LiteralPath 'node_modules/electron/package.json' -Raw|ConvertFrom-Json).version
+            $zip="electron-v${v}-win32-x64.zip"
+            curl.exe -fsSL --retry 2 "https://github.com/electron/electron/releases/download/v$v/$zip" -o "$root/$zip"
+            if($LASTEXITCODE){throw 'Failed to download the official Electron ZIP.'}
+            curl.exe -fsSL --retry 2 "https://github.com/electron/electron/releases/download/v$v/SHASUMS256.txt" -o "$root/SHASUMS256.txt"
+            if($LASTEXITCODE){throw 'Failed to download the official Electron manifest.'}
+            $line=Get-Content -LiteralPath "$root/SHASUMS256.txt" | Where-Object {$_.EndsWith($zip)} | Select-Object -First 1
+            if(($line -split '\s+')[0] -ne (Get-FileHash -LiteralPath "$root/$zip" -Algorithm SHA256).Hash){throw 'Electron checksum mismatch.'}
+            $env:NAGISA_FORGE_EXTRACT_MODULE=(Resolve-Path -LiteralPath 'node_modules/@electron/packager/dist/unzip.js').Path
+            $hook=(Resolve-Path -LiteralPath '../.github/acceptance/extract.cjs').Path
+            $env:NODE_OPTIONS='--require='+$hook.Replace('\','/')
+            $log="$root/build.log"
+            npm.cmd run release:windows 2>&1 | Tee-Object -FilePath $log
+            if($LASTEXITCODE){throw 'Candidate build failed.'}
+            $candidate='out/release/v1.0.3/Nagisa-Desktop-Pet-1.0.3-win-x64-Setup.exe'
+            Write-Host "::notice title=Candidate identity::$((Get-Item -LiteralPath $candidate).Length) bytes | $((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash)"
+            npm.cmd version 1.0.4 --no-git-tag-version
+            if($LASTEXITCODE){throw 'Could not set the internal version.'}
+            $log="$root/internal.log"
+            npm.cmd run release:windows 2>&1 | Tee-Object -FilePath $log
+            if($LASTEXITCODE){throw 'Internal update build failed.'}
+          } catch {
+            Write-Host "::error title=Candidate build::$($_.Exception.Message)"
+            if($log -and (Test-Path -LiteralPath $log)){ Get-Content -LiteralPath $log -Tail 15 | ForEach-Object {Write-Host "::warning title=Build log::$($_ -replace '%','%25')"} }
+            throw
+          }
+      - name: Fetch the published installers and ZIP baselines
+        shell: pwsh
+        run: |
+          $root="$env:RUNNER_TEMP/nagisa-v103"
+          foreach($version in '1.0.0','1.0.1'){
+            $oldName="Nagisa-Desktop-Pet-$version-win-x64.zip"
+            $zip=Join-Path $root $oldName
+            curl.exe -fsSL --retry 2 "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$version/$oldName" -o $zip
+            if($LASTEXITCODE){exit $LASTEXITCODE}
+            $dir=(New-Item -ItemType Directory -Path "$root/portable-$version").FullName
+            & "$env:SystemRoot/System32/tar.exe" -xf $zip -C $dir
+            if($LASTEXITCODE){exit $LASTEXITCODE}
+          }
+          $file='Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
+          curl.exe -fsSL --retry 2 "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v1.0.2/$file" -o "$root/$file"
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+          if((Get-FileHash -LiteralPath "$root/$file" -Algorithm SHA256).Hash -ne 'DAFAB435F443CF616352638AA6908ACDB1ECADE74A7666E085CE339B7EC88820'){throw 'The v1.0.2 release does not match the verified SHA-256.'}
+      - name: Verify install, migrations, rollback and uninstallation
+        shell: pwsh
+        run: |
+          $root="$env:RUNNER_TEMP/nagisa-v103"
+          try {
+            & .github/acceptance/verify.ps1 -Setup (Resolve-Path -LiteralPath 'nagisa-app/out/release/v1.0.3/Nagisa-Desktop-Pet-1.0.3-win-x64-Setup.exe').Path -Later (Resolve-Path -LiteralPath 'nagisa-app/out/release/v1.0.4/Nagisa-Desktop-Pet-1.0.4-win-x64-Setup.exe').Path -Squirrel "$root/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Portable100 "$root/portable-1.0.0" -Portable101 "$root/portable-1.0.1"
+          } catch {
+            Write-Host "::error title=Windows setup test::$($_.Exception.Message)"
+            throw
+          }
