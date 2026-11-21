@@ -98,7 +98,9 @@ function UninstallEntry {
       Where-Object { $_.UninstallString -and $_.UninstallString.IndexOf($update,[StringComparison]::OrdinalIgnoreCase) -ge 0 })
 }
 function RunValue {
-    Get-ItemPropertyValue -LiteralPath $runKey -Name 'NagisaDesktopPet' -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $runKey) {
+        (Get-Item -LiteralPath $runKey).GetValue('NagisaDesktopPet')
+    }
 }
 function Set-LegacyLogin([string]$Path,[bool]$Enabled) {
     New-Item -Path $runKey -Force | Out-Null

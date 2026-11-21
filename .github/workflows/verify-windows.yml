@@ -39,17 +39,39 @@ jobs:
         shell: pwsh
         working-directory: nagisa-app
         run: |
-          npm.cmd run make -- --platform=win32 --arch=x64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/nagisa-build.log"
-          $code=$LASTEXITCODE
-          if ($code) {
-            Get-Content -LiteralPath "$env:RUNNER_TEMP/nagisa-build.log" -Tail 15 | ForEach-Object { Write-Host "::error title=Forge::$($_ -replace '%','%25')" }
-            exit $code
+          $PSNativeCommandUseErrorActionPreference = $false
+          $log = "$env:RUNNER_TEMP/nagisa-build.log"
+          try {
+            $env:NAGISA_ELECTRON_ZIP_DIR = (New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-runtime").FullName
+            $version = (Get-Content -LiteralPath 'node_modules/electron/package.json' -Raw | ConvertFrom-Json).version
+            tar.exe -acf "$env:NAGISA_ELECTRON_ZIP_DIR/electron-v$version-win32-x64.zip" -C 'node_modules/electron/dist' .
+            if ($LASTEXITCODE) { throw 'Could not archive the installed Electron runtime.' }
+            $env:NAGISA_FORGE_EXTRACT_MODULE = (Resolve-Path -LiteralPath 'node_modules/@electron/packager/dist/unzip.js').Path
+            $hook = "$env:RUNNER_TEMP/nagisa-forge-extract.cjs"
+            @'
+            const path = require('node:path');
+            const { execFile } = require('node:child_process');
+            const { promisify } = require('node:util');
+            const unzip = require(process.env.NAGISA_FORGE_EXTRACT_MODULE);
+            const tar = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
+            unzip.extractElectronZip = async (zip, directory) =>
+              promisify(execFile)(tar, ['-xf', zip, '-C', directory], { windowsHide: true });
+            '@ | Set-Content -LiteralPath $hook -Encoding ascii
+            $env:NODE_OPTIONS = '--require=' + $hook.Replace('\','/')
+            npm.cmd run make -- --platform=win32 --arch=x64 2>&1 | Tee-Object -FilePath $log
+            if ($LASTEXITCODE) { throw "Forge exited with $LASTEXITCODE." }
+            $qa = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-acceptance"
+            $setup = Join-Path $qa.FullName 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
+            Copy-Item -LiteralPath 'out/make/squirrel.windows/x64/Nagisa Desktop Pet-1.0.2 Setup.exe' -Destination $setup
+            Get-Item -LiteralPath $setup | Select-Object Name,Length | Format-List
+            Get-FileHash -LiteralPath $setup -Algorithm SHA256 | Format-List
+          } catch {
+            Write-Host "::error title=Build error::$($_.Exception.Message)"
+            if(Test-Path -LiteralPath $log) {
+              (Get-Content -LiteralPath $log -Tail 15) | ForEach-Object { Write-Host "::error title=Forge::$($_ -replace '%','%25')" }
+            }
+            throw
           }
-          $qa = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-acceptance"
-          $setup = Join-Path $qa.FullName 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
-          Copy-Item -LiteralPath 'out/make/squirrel.windows/x64/Nagisa Desktop Pet-1.0.2 Setup.exe' -Destination $setup
-          Get-Item -LiteralPath $setup | Select-Object Name,Length | Format-List
-          Get-FileHash -LiteralPath $setup -Algorithm SHA256 | Format-List
       - name: Fetch both historical portable releases
         shell: pwsh
         run: |
