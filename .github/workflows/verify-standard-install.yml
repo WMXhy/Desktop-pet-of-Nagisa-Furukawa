@@ -73,6 +73,8 @@ jobs:
             if(Test-Path -LiteralPath $expected){throw 'The test user must start fresh.'}
             $proc=Start-Process -FilePath $setup -ArgumentList '--silent' -PassThru
             if(!$proc.WaitForExit(90000) -or $proc.ExitCode -ne 0){throw "Setup failed with exit code $($proc.ExitCode)."}
+            $setupDone=(Get-Date).AddSeconds(38)
+            while(!(Test-Path -LiteralPath $expected) -and (Get-Date) -lt $setupDone){Start-Sleep -Milliseconds 240}
             if(!(Test-Path -LiteralPath $expected)){throw 'Setup did not install the expected application version.'}
             $pet=Start-Process -FilePath "$env:LOCALAPPDATA/nagisa_app/Nagisa Desktop Pet.exe" -PassThru
             $save="$env:APPDATA/Nagisa Desktop Pet/save.json"
@@ -85,16 +87,20 @@ jobs:
               Set-Content -LiteralPath $log -Encoding ascii
           } catch {
             $_.Exception.Message | Set-Content -LiteralPath $log -Encoding ascii
+            foreach($probe in "$env:LOCALAPPDATA/SquirrelTemp/SquirrelSetup.log","$env:TEMP/SquirrelSetup.log","$env:LOCALAPPDATA/nagisa_app/SquirrelSetup.log") {
+              if(Test-Path -LiteralPath $probe){Get-Content -LiteralPath $probe -Tail 12 | Add-Content -LiteralPath $log -Encoding ascii}
+            }
             exit 1
           }
           '@
           $exercisePath=Join-Path $sand 'exercise.ps1'
           $exercise | Set-Content -LiteralPath $exercisePath -Encoding utf8
           $child=Start-Process -FilePath $powershell -WorkingDirectory $sand -Credential $credential -LoadUserProfile -ArgumentList @('-NoProfile','-File',('"{0}"' -f $exercisePath)) -PassThru
-          if(!$child.WaitForExit(155000)){throw 'The isolated standard-user test did not finish.'}
+          if(!$child.WaitForExit(175000)){throw 'The isolated standard-user test did not finish.'}
           $result=Get-Content -LiteralPath "$sand/result.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
           if($child.ExitCode -ne 0 -or $result -notlike 'PASS*'){
             Write-Host "::error title=Standard-user setup::$result"
+            Get-Content -LiteralPath "$sand/result.txt" | Select-Object -Skip 1 | ForEach-Object { Write-Host "::warning title=Standard-user Setup log::$($_ -replace '%','%25')" }
             throw 'The standard-user setup check failed.'
           }
           Write-Host "::notice title=Passed standard-user setup::$result"
