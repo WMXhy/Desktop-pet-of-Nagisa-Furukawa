@@ -62,6 +62,9 @@ jobs:
             ) -join [Environment]::NewLine
             $internal=$internal.Replace('    failure:', $failure)
             $internal -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
+            $engine='installer/engine.cs'
+            $instrumented=(Get-Content -LiteralPath $engine -Raw -Encoding utf8).Replace('Respond(result, "", "", message);','Respond(result, "", "", error.ToString());')
+            Set-Content -LiteralPath $engine -Value $instrumented -Encoding utf8NoBOM
             $log="$root/build.log"
             npm.cmd run release:windows 2>&1 | Tee-Object -FilePath $log
             if($LASTEXITCODE){throw 'Candidate build failed.'}
