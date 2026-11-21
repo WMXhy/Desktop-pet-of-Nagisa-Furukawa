@@ -81,8 +81,11 @@ function Check-Launch([string]$Path) {
     return $proc
 }
 function Close-Pet($Proc) {
-    if ($Proc.CloseMainWindow() -and $Proc.WaitForExit(3000)){return}
-    $Proc.Kill(); $Proc.WaitForExit(3000)|Out-Null
+    if (!($Proc.CloseMainWindow() -and $Proc.WaitForExit(3000))) {
+        $Proc.Kill()
+        $Proc.WaitForExit(3000) | Out-Null
+    }
+    Within { !(Get-Process -Name $product -ErrorAction SilentlyContinue) } 'Electron child processes did not exit.' | Out-Null
 }
 function Uninstall-Current {
     $path=RegValue $state 'InstallDir'
