@@ -1,0 +1,60 @@
+name: Prepare the v1.0.2 GitHub release draft
+on:
+  push:
+    branches: ['codex/v1.0.2-release-draft']
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: v1.0.2-windows-setup
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: 44882291252
+      - name: Upload the verified Setup to the release draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'v1.0.2'
+          $name = 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
+          $tested = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/44882291252" | ConvertFrom-Json
+          if ($tested.conclusion -ne 'success' -or $tested.head_sha -ne '5b3531df7a292babe180763e5d716327d6031d77') {
+            throw 'The named Windows verification run was not successful.'
+          }
+          $tagged = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha'
+          if ($tagged -ne '586adcf5298e3b426e86fd0fa735e197292c92ef') { throw 'Release tag does not point to the build source.' }
+          $file = Get-Item -LiteralPath "candidate/$name"
+          $digest = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne 'dafab435f443cf616352638aa6908acdb1ecade74a7666e085ce339b7ec88820') { throw 'The Windows acceptance artifact SHA-256 did not match.' }
+          if ($file.Length -ne 164280320) { throw 'The Windows acceptance artifact byte count did not match.' }
+          $notes = @(
+            'Windows x64 改用单文件完整安装包，安装后从开始菜单打开 Nagisa Desktop Pet。',
+            '',
+            '已在用渚的玩家请先从托盘退出桌宠，再运行 Setup。v1.0.0 和 v1.0.1 便携版均可直接更新，同一 Windows 账户继续使用原进度、桌面偏好和位置。卸载会保留养成数据。',
+            '',
+            '独立 Windows 虚拟机已验证首次安装、开始菜单、两条旧 ZIP 迁移、内部 v1.0.0 安装版覆盖升级和卸载重装。已核对登录启动的启用和禁用状态，并运行登记的启动入口验证新版本。',
+            '',
+            "[安装验收记录](https://github.com/$env:GITHUB_REPOSITORY/actions/runs/44882291252)",
+            '',
+            "$name · $($file.Length) 字节",
+            "SHA-256 $digest"
+          ) -join [Environment]::NewLine
+          $notes | Set-Content -LiteralPath 'release-notes.md' -Encoding utf8
+          gh release create $tag $file.FullName --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title 'v1.0.2 · Windows 安装版' --notes-file release-notes.md
+          if ($LASTEXITCODE) { throw 'Could not create the GitHub release draft.' }
+          $draft = (gh api "repos/$env:GITHUB_REPOSITORY/releases" | ConvertFrom-Json) | Where-Object tag_name -eq $tag
+          $uploaded = @($draft.assets | Where-Object name -eq $name)
+          if (!$draft.draft -or $uploaded.Count -ne 1 -or $uploaded[0].size -ne $file.Length -or $uploaded[0].digest -ne "sha256:$digest") {
+            throw 'The uploaded draft asset did not match the acceptance artifact.'
+          }
+          Write-Host "::notice title=Release draft::$($draft.html_url) | $($file.Length) bytes | $digest"
+
