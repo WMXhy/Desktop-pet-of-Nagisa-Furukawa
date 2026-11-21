@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -41,6 +43,29 @@ internal static class Installer
         public string Backup { get { return Path.Combine(Work, "backup"); } }
         public string NewCatalog { get { return Path.Combine(Work, "new.list"); } }
         public string OldCatalog { get { return Path.Combine(Work, "old.list"); } }
+    }
+
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, IntPtr findData, uint flags);
+        void GetIDList(out IntPtr idList);
+        void SetIDList(IntPtr idList);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder description, int size);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string description);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int size);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string directory);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int size);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
+        void GetHotkey(out ushort hotkey);
+        void SetHotkey(ushort hotkey);
+        void GetShowCmd(out int showCommand);
+        void SetShowCmd(int showCommand);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
     }
 
     private static string Value(string key, string name)
@@ -227,16 +252,44 @@ internal static class Installer
         using (var approval = Registry.CurrentUser.OpenSubKey(Approval, true)) if (approval != null) approval.DeleteValue(LoginName, false);
     }
 
-    private static dynamic OpenShortcut()
+    private static IShellLinkW NewShellLink()
     {
-        dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-        return shell.CreateShortcut(Shortcut);
+        var shellLinkClass = new Guid("00021401-0000-0000-C000-000000000046");
+        return (IShellLinkW)Activator.CreateInstance(Type.GetTypeFromCLSID(shellLinkClass));
+    }
+
+    private static string ShortcutTarget(string file)
+    {
+        var link = NewShellLink();
+        try
+        {
+            ((IPersistFile)link).Load(file, 0);
+            var path = new StringBuilder(260);
+            link.GetPath(path, path.Capacity, IntPtr.Zero, 0);
+            return path.ToString();
+        }
+        finally { Marshal.FinalReleaseComObject(link); }
+    }
+
+    private static void WriteShortcut(string file, string folder)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(file));
+        var link = NewShellLink();
+        try
+        {
+            var target = Path.Combine(folder, Exe);
+            link.SetPath(target);
+            link.SetWorkingDirectory(folder);
+            link.SetIconLocation(target, 0);
+            ((IPersistFile)link).Save(file, true);
+        }
+        finally { Marshal.FinalReleaseComObject(link); }
     }
 
     private static void CheckShortcut(string target, string previous)
     {
         if (!File.Exists(Shortcut)) return;
-        string path = OpenShortcut().TargetPath;
+        var path = ShortcutTarget(Shortcut);
         if (!Paths.Equals(path, Path.Combine(target, Exe)) &&
             (previous.Length == 0 || !Paths.Equals(path, Path.Combine(previous, Exe))) &&
             !ContainsPath(LegacyRoot, path))
@@ -246,12 +299,7 @@ internal static class Installer
     private static void WriteEntries(Transaction tx, Catalog catalog)
     {
         CheckShortcut(tx.Target, tx.Previous);
-        Directory.CreateDirectory(Path.GetDirectoryName(Shortcut));
-        dynamic link = OpenShortcut();
-        link.TargetPath = Path.Combine(tx.Target, Exe);
-        link.WorkingDirectory = tx.Target;
-        link.IconLocation = Path.Combine(tx.Target, Exe) + ",0";
-        link.Save();
+        WriteShortcut(Shortcut, tx.Target);
         TransferLogin(tx);
 
         using (var key = Registry.CurrentUser.CreateSubKey(Uninstall + ProductId))
@@ -482,7 +530,7 @@ internal static class Installer
         var exe = Path.Combine(folder, Exe);
         ReadCatalog(LocalFile(folder, Marker));
         DeleteOwned(folder);
-        if (File.Exists(Shortcut) && Paths.Equals((string)OpenShortcut().TargetPath, exe)) File.Delete(Shortcut);
+        if (File.Exists(Shortcut) && Paths.Equals(ShortcutTarget(Shortcut), exe)) File.Delete(Shortcut);
         RemoveLogin(exe);
         Registry.CurrentUser.DeleteSubKeyTree(Uninstall + ProductId, false);
         Registry.CurrentUser.DeleteSubKeyTree(State, false);
@@ -494,6 +542,7 @@ internal static class Installer
             "message=" + message.Replace('\r', ' ').Replace('\n', ' ') }, Encoding.Unicode);
     }
 
+    [STAThread]
     private static int Main(string[] args)
     {
         if (args.Length < 2) return 2;
