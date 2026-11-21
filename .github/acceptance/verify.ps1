@@ -21,6 +21,7 @@ $differentParent=Join-Path $env:LOCALAPPDATA '渚的 另一个目录'
 $different=Join-Path $differentParent $product
 $save=Join-Path $userData 'save.json'
 $prefs=Join-Path $userData 'settings.json'
+$position=Join-Path $userData 'pet-position.json'
 
 function Require($Value,[string]$Message){if(!$Value){throw $Message}}
 function Within([scriptblock]$Action,[string]$Message,[int]$Seconds=40) {
@@ -32,17 +33,22 @@ function Within([scriptblock]$Action,[string]$Message,[int]$Seconds=40) {
     }while((Get-Date) -lt $end)
     throw $Message
 }
-function Process-NoNode([string]$File,[string]$Args='') {
+function Process-NoNode([string]$File,[string]$LaunchArguments='') {
     $previous=$env:PATH
     try {
         $env:PATH="$env:SystemRoot\System32;$env:SystemRoot"
         Require (!(Get-Command node.exe -ErrorAction SilentlyContinue)) 'Node is visible on the test PATH.'
-        if($Args){return Start-Process -FilePath $File -ArgumentList $Args -PassThru}
+        if($LaunchArguments){return Start-Process -FilePath $File -ArgumentList $LaunchArguments -PassThru}
         return Start-Process -FilePath $File -PassThru
     }finally{$env:PATH=$previous}
 }
 function Expect-Exit($Proc,[int]$Code,[string]$Label){
-    Require ($Proc.WaitForExit(130000)) "$Label timed out."
+    if (!$Proc.WaitForExit(130000)) {
+        $details=Get-CimInstance Win32_Process -Filter "ProcessId = $($Proc.Id) OR ParentProcessId = $($Proc.Id)" |
+            Select-Object Name,CommandLine
+        Write-Host "::warning title=Installer process::$($details | ConvertTo-Json -Compress)"
+        throw "$Label timed out."
+    }
     Require ($Proc.ExitCode -eq $Code) "$Label exited with $($Proc.ExitCode), expected $Code."
 }
 function Run-Setup([string]$File,[string]$Directory='',[int]$Code=0){
@@ -100,6 +106,14 @@ function Seed([int]$Coins,[int]$Scale){
         systemNotifications=$false;quietHours=$true;quietStart='22:00';quietEnd='08:00';fullscreenQuiet=$true
         fullscreenHide=$false;manualQuiet=$false;shortcuts=@{togglePet='';recoverPet='';openJournal=''};onboardingSeen=$true}
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $prefs -Encoding utf8NoBOM
+    @{version=1;displayId=1;dx=$Coins;dy=$Scale} | ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $position -Encoding utf8NoBOM
+}
+function Position-Hash {
+    return (Get-FileHash -LiteralPath $position -Algorithm SHA256).Hash
+}
+function Check-Position([string]$Hash) {
+    Require ((Position-Hash) -eq $Hash) 'Setup changed existing desktop position data.'
 }
 function Check-Data([int]$Coins,[int]$Scale) {
     $data=Get-Content -LiteralPath $save -Raw | ConvertFrom-Json
@@ -142,47 +156,58 @@ Write-Host '::notice title=Passed directory protections::Disallowed root, unrela
 foreach($entry in @(@{App=$Portable100;Version='1.0.0';Coins=52;Scale=125;Enabled=$true},
                      @{App=$Portable101;Version='1.0.1';Coins=66;Scale=150;Enabled=$false})){
     Seed $entry.Coins $entry.Scale
-    $oldPet=Process-NoNode "$($entry.App)/$exe"
+    $files=@(Get-ChildItem -LiteralPath $entry.App -Filter $exe -File -Recurse)
+    Require ($files.Count -eq 1) "Portable ZIP $($entry.Version) did not resolve to one executable."
+    $oldPet=Process-NoNode $files[0].FullName
     Start-Sleep -Seconds 2
     Require (!$oldPet.HasExited) 'Portable app could not start.'
     Run-Setup $Setup $customParent 1
     Close-Pet $oldPet
-    Set-Login "$($entry.App)\$exe" $entry.Enabled
+    Set-Login $files[0].FullName $entry.Enabled
+    $positionHash=Position-Hash
     Run-Setup $Setup $customParent
     Check-Install $custom '1.0.3'
     Check-Login $custom $entry.Enabled
+    Check-Position $positionHash
     Close-Pet (Check-Launch $custom)
     Check-Data $entry.Coins $entry.Scale
     Uninstall-Current
     Require (!(RegValue $runKey NagisaDesktopPet)) 'Uninstall left startup entry.'
-    Write-Host "::notice title=Passed portable migration::$($entry.Version) to $custom; save and startup state retained"
+    Write-Host "::notice title=Passed portable migration::$($entry.Version) to $custom; care, scale, position file, and startup state retained"
 }
 
 Expect-Exit (Process-NoNode $Squirrel '--silent') 0 'Published Squirrel 1.0.2'
 Within {Test-Path -LiteralPath "$oldRoot/app-1.0.2/$exe"} 'Official Squirrel install did not finish.' | Out-Null
 Seed 72 150
 Set-Login "$oldRoot\$exe" $true
+$positionHash=Position-Hash
 Run-Setup $Setup $custom
 Require (!(Test-Path -LiteralPath $oldUninstall)) 'Squirrel uninstall entry was left behind.'
 Check-Install $custom '1.0.3'
 Check-Login $custom $true
+Check-Position $positionHash
 Close-Pet (Check-Launch $custom)
 Check-Data 72 150
-Write-Host '::notice title=Passed published Squirrel migration::Official 1.0.2 installed edition to custom NSIS directory, save and startup retained'
+Write-Host '::notice title=Passed published Squirrel migration::Official 1.0.2 installed edition to custom NSIS directory; care, scale, position file and startup state retained'
 
 'player file' | Set-Content -LiteralPath "$custom/user.txt"
+$positionHash=Position-Hash
 Run-Setup $Setup
 Check-Install $custom '1.0.3'
+Check-Position $positionHash
 $locked=[IO.File]::Open("$custom/resources/app.asar",[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
 try { Run-Setup $Later '' 1 } finally { $locked.Dispose() }
 Check-Install $custom '1.0.3'
 Require ((Get-Content -LiteralPath "$custom/user.txt") -eq 'player file') 'Failure changed a player file.'
 Close-Pet (Check-Launch $custom)
+$positionHash=Position-Hash
 Run-Setup $Later
 Check-Install $custom '1.0.4'
+Check-Position $positionHash
 Run-Setup $Later $differentParent
 Check-Install $different '1.0.4'
 Check-Login $different $true
+Check-Position $positionHash
 Require (!(Test-Path -LiteralPath "$custom/$exe")) 'Move did not retire the previous app payload.'
 Require ((Get-Content -LiteralPath "$custom/user.txt") -eq 'player file') 'Move deleted a player file.'
 Close-Pet (Check-Launch $different)
@@ -190,10 +215,13 @@ Check-Data 72 150
 Write-Host '::notice title=Passed rollback and relocation::Locked file rolled back; retry upgraded in place, then moved to another volume while retaining user file'
 
 'keep installed notes' | Set-Content -LiteralPath "$different/personal.txt"
+$positionHash=Position-Hash
 Uninstall-Current
 Require ((Get-Content -LiteralPath "$different/personal.txt") -eq 'keep installed notes') 'Uninstall removed an unmanaged file.'
 Require (!(RegValue $runKey NagisaDesktopPet)) 'Uninstall left an obsolete logon command.'
+Check-Position $positionHash
 Run-Setup $Setup $testRoot
+Check-Position $positionHash
 $reinstalled=Join-Path $testRoot $product
 Check-Install $reinstalled '1.0.3'
 Close-Pet (Check-Launch $reinstalled)

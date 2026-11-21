@@ -58,6 +58,9 @@ jobs:
             Write-Host "::notice title=Candidate identity::$((Get-Item -LiteralPath $candidate).Length) bytes | $((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash)"
             npm.cmd version 1.0.4 --no-git-tag-version
             if($LASTEXITCODE){throw 'Could not set the internal version.'}
+            $source='installer/windows.nsi'
+            $internal=(Get-Content -LiteralPath $source -Raw -Encoding utf8).Replace('/SOLID lzma','/SOLID zlib')
+            $internal -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
             $log="$root/internal.log"
             npm.cmd run release:windows 2>&1 | Tee-Object -FilePath $log
             if($LASTEXITCODE){throw 'Internal update build failed.'}
