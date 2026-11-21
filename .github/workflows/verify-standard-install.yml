@@ -77,8 +77,9 @@ jobs:
             exit 1
           }
           '@
-          $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($exercise))
-          $child=Start-Process -FilePath $powershell -WorkingDirectory $sand -Credential $credential -LoadUserProfile -ArgumentList @('-NoProfile','-EncodedCommand',$encoded) -PassThru
+          $exercisePath=Join-Path $sand 'exercise.ps1'
+          $exercise | Set-Content -LiteralPath $exercisePath -Encoding utf8
+          $child=Start-Process -FilePath $powershell -WorkingDirectory $sand -Credential $credential -LoadUserProfile -ArgumentList @('-NoProfile','-File',('"{0}"' -f $exercisePath)) -PassThru
           if(!$child.WaitForExit(155000)){throw 'The isolated standard-user test did not finish.'}
           $result=Get-Content -LiteralPath "$sand/result.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
           if($child.ExitCode -ne 0 -or $result -notlike 'PASS*'){
