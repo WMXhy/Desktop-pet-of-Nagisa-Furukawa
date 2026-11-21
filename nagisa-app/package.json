@@ -1,7 +1,7 @@
 {
   "name": "nagisa-app",
   "productName": "Nagisa Desktop Pet",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "古河渚 Windows 桌宠",
   "private": true,
   "author": "WMXhy",
@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "electron-squirrel-startup": "1.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

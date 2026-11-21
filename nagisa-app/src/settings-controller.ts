@@ -2,6 +2,7 @@ import { app, globalShortcut, screen } from 'electron';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createSettingsStore } from './settings-store';
+import { petLoginItem, readPetLoginItem } from './windows-install';
 import { isQuietNow, liveSettings, shortcutIds, validateSettings,
   type Failure, type Presentation, type Settings, type SettingsResult, type SettingsView, type ShortcutAction } from './settings';
 
@@ -10,8 +11,7 @@ export type SettingsChange = 'preview' | 'cancel' | 'apply' | 'refresh';
 export function createSettingsController(directory: string, change: (kind: SettingsChange) => void,
   onShortcut: (id: ShortcutAction) => void) {
   const store = createSettingsStore(directory);
-  const loginItem = { path: process.execPath, args: app.isPackaged ? [] : [app.getAppPath()],
-    name: app.isPackaged ? 'NagisaDesktopPet' : 'NagisaDesktopPet.Dev' };
+  const loginItem = petLoginItem();
   const mappings = new Map<string, ShortcutAction>();
   let settings = store.initial;
   let draft: Settings | undefined;
@@ -19,10 +19,7 @@ export function createSettingsController(directory: string, change: (kind: Setti
   let fullscreen = false;
 
   function readLogin() {
-    if (process.platform !== 'win32') return false;
-    const current = app.getLoginItemSettings(loginItem);
-    return current.launchItems?.find((item) => item.name === loginItem.name && item.scope === 'user')?.enabled
-      ?? (current.openAtLogin && current.executableWillLaunchAtLogin);
+    return readPetLoginItem(loginItem.path, loginItem.name)?.enabled ?? false;
   }
 
   function presentation(): Presentation {

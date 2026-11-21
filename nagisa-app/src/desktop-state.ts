@@ -5,10 +5,14 @@ import { createInterface } from 'node:readline';
 
 export type DesktopState = { fullscreen: boolean; notificationsAllowed: boolean };
 
+export function windowsHelperPath(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'NagisaDesktopState.exe')
+    : join(app.getAppPath(), '.windows-helper', 'dev', 'NagisaDesktopState.exe');
+}
+
 export function watchDesktop(update: (state: DesktopState) => void): () => void {
   if (process.platform !== 'win32') return () => {};
-  const executable = app.isPackaged ? join(process.resourcesPath, 'NagisaDesktopState.exe')
-    : join(app.getAppPath(), '.windows-helper', 'dev', 'NagisaDesktopState.exe');
+  const executable = windowsHelperPath();
   let child: ChildProcessWithoutNullStreams;
   let retry: ReturnType<typeof setTimeout>;
   let stopped = false;

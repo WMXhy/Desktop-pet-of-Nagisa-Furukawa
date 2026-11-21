@@ -13,6 +13,7 @@ import { dangoHugMs, isDangoMode, isDangoSlot, type DangoMode } from './dango';
 import { petBounds, restorePosition, savePosition } from './pet-position';
 import { practiceLineMs } from './relationship';
 import { watchDesktop } from './desktop-state';
+import { handleSquirrelStartup, migrateInstalledLogin } from './windows-install';
 import { defaultSettings, type JournalSection, type Settings, type SettingsResult, type ShortcutAction } from './settings';
 import { createSettingsController, type SettingsChange } from './settings-controller';
 import { exportJson, readTransfer, recoverDataTransaction, replaceSavedData, RollbackError, transferPreview,
@@ -36,6 +37,7 @@ async function startPet(): Promise<void> {
   const directory = app.getPath('userData');
   mkdirSync(directory, { recursive: true });
   recoverDataTransaction(directory);
+  migrateInstalledLogin();
   const settings = createSettingsController(directory, applyDesktop, useShortcut);
   const icon = nativeImage.createFromDataURL(appIcon);
   const size = petSize(settings.settings());
@@ -690,21 +692,19 @@ async function startPet(): Promise<void> {
   if (!settings.settings().onboardingSeen) openSettings();
 }
 
-const testData = process.env.NAGISA_TEST_DATA;
-if (!app.isPackaged && testData && isAbsolute(testData)) {
-  mkdirSync(testData, { recursive: true });
-  app.setPath('userData', testData);
+if (!handleSquirrelStartup()) {
+  const testData = process.env.NAGISA_TEST_DATA;
+  if (!app.isPackaged && testData && isAbsolute(testData)) {
+    mkdirSync(testData, { recursive: true });
+    app.setPath('userData', testData);
+  }
+  if (app.requestSingleInstanceLock()) {
+    app.whenReady().then(startPet).catch((error) => {
+      console.error('桌宠启动失败', error);
+      dialog.showErrorBox('桌宠启动失败', '无法加载桌宠数据，请确认应用数据目录可读写后重试。');
+      app.quit();
+    });
+    app.on('window-all-closed', () => app.quit());
+    app.on('will-quit', () => { globalShortcut.unregisterAll(); tray?.destroy(); });
+  } else app.quit();
 }
-
-if (app.requestSingleInstanceLock()) {
-  app.whenReady().then(startPet).catch((error) => {
-    console.error('桌宠启动失败', error);
-    dialog.showErrorBox('桌宠启动失败', '无法加载桌宠数据，请确认应用数据目录可读写后重试。');
-    app.quit();
-  });
-} else {
-  app.quit();
-}
-
-app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { globalShortcut.unregisterAll(); tray?.destroy(); });

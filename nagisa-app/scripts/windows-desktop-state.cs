@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32;
 
 internal static class DesktopState
 {
@@ -58,6 +59,16 @@ internal static class DesktopState
 
     internal static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--read-login-item")
+        {
+            // Electron exposes startup approval by executable, so first find the registered command by name.
+            using (var run = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+            {
+                Console.OutputEncoding = new UTF8Encoding(false);
+                if (run != null) Console.WriteLine(run.GetValue(args[1]) as string);
+            }
+            return 0;
+        }
         uint owner;
         if (args.Length != 1 || !UInt32.TryParse(args[0], out owner)) return 2;
         try { if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) SetProcessDPIAware(); }
