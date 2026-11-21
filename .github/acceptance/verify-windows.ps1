@@ -103,17 +103,18 @@ function RunValue {
     }
 }
 function Set-LegacyLogin([string]$Path,[bool]$Enabled) {
-    New-Item -Path $runKey -Force | Out-Null
-    New-Item -Path $approved -Force | Out-Null
+    if (!(Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }
+    if (!(Test-Path -LiteralPath $approved)) { New-Item -Path $approved -Force | Out-Null }
     New-ItemProperty -LiteralPath $runKey -Name 'NagisaDesktopPet' -Value ('"'+$Path+'"') -PropertyType String -Force | Out-Null
     [byte[]]$approval = @($(if($Enabled){2}else{3}),0,0,0,0,0,0,0,0,0,0,0)
     New-ItemProperty -LiteralPath $approved -Name 'NagisaDesktopPet' -Value $approval -PropertyType Binary -Force | Out-Null
 }
 function Verify-Login([bool]$Enabled) {
     Require ((RunValue).Trim('"') -eq $stub) 'The login entry did not migrate to the stable launcher.'
-    $bytes = Get-ItemPropertyValue -LiteralPath $approved -Name 'NagisaDesktopPet'
-    $expected = if($Enabled){2}else{3}
-    Require ($bytes[0] -eq $expected) 'The Windows startup approval state changed.'
+    $bytes = (Get-Item -LiteralPath $approved).GetValue('NagisaDesktopPet')
+    # Electron deletes the approval override when it enables a Run entry.
+    $active = $null -eq $bytes -or $bytes[0] -eq 2
+    Require ($active -eq $Enabled) 'The Windows startup approval state changed.'
 }
 function Start-Installed {
     $links = @(StartLinks)
