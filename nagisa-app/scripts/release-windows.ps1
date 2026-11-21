@@ -47,7 +47,11 @@ try {
     & $Nsis /INPUTCHARSET UTF8 /V3 "/DAPP_VERSION=$version" "/DAPP_ICON=$icon" "/DINSTALL_ENGINE=$engine" "/DPAYLOAD_DIR=$payload" "/DPAYLOAD_BYTES=$bytes" "/DPAYLOAD_KIB=$size" "/DSETUP_EXE=$workingSetup" 'installer\windows.nsi'
     if ($LASTEXITCODE) { throw "NSIS packaging exited with $LASTEXITCODE." }
     Copy-Item -LiteralPath $workingSetup -Destination $setup -Force
-    Get-Item -LiteralPath $setup | Select-Object FullName, Length
-    Get-FileHash -LiteralPath $setup -Algorithm SHA256
+    $file = Get-Item -LiteralPath $setup
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($file.FullName)
+    try { $digest = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $sha.Dispose() }
+    [pscustomobject]@{ Path=$file.FullName; Bytes=$file.Length; SHA256=$digest } | Format-List
 }
 finally { Pop-Location }
