@@ -17,16 +17,34 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.16.0'
-      - name: Build full Windows Setup
+      - name: Install locked dependencies
         shell: pwsh
         working-directory: nagisa-app
         run: |
-          npm.cmd ci --no-audit --no-fund
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm.cmd ci --no-audit --no-fund 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/nagisa-npm.log"
+          $code=$LASTEXITCODE
+          if ($code) {
+            Get-Content -LiteralPath "$env:RUNNER_TEMP/nagisa-npm.log" -Tail 12 | ForEach-Object { Write-Host "::error title=npm ci::$($_ -replace '%','%25')" }
+            exit $code
+          }
+      - name: Typecheck
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
           npm.cmd run typecheck
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          npm.cmd run make -- --platform=win32 --arch=x64
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build full Windows Setup
+        env:
+          CI: 'true'
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          npm.cmd run make -- --platform=win32 --arch=x64 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/nagisa-build.log"
+          $code=$LASTEXITCODE
+          if ($code) {
+            Get-Content -LiteralPath "$env:RUNNER_TEMP/nagisa-build.log" -Tail 15 | ForEach-Object { Write-Host "::error title=Forge::$($_ -replace '%','%25')" }
+            exit $code
+          }
           $qa = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-acceptance"
           $setup = Join-Path $qa.FullName 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
           Copy-Item -LiteralPath 'out/make/squirrel.windows/x64/Nagisa Desktop Pet-1.0.2 Setup.exe' -Destination $setup
@@ -67,7 +85,17 @@ jobs:
         shell: pwsh
         run: |
           $qa = "$env:RUNNER_TEMP/nagisa-acceptance"
-          & .github/acceptance/verify-windows.ps1 -Setup "$qa/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Baseline "$qa/internal-1.0.0/internal-1.0.0.exe" -Portable100 "$qa/portable-1.0.0" -Portable101 "$qa/portable-1.0.1"
+          try {
+            & .github/acceptance/verify-windows.ps1 -Setup "$qa/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Baseline "$qa/internal-1.0.0/internal-1.0.0.exe" -Portable100 "$qa/portable-1.0.0" -Portable101 "$qa/portable-1.0.1"
+          } catch {
+            Write-Host "::error title=Windows test::$($_.Exception.Message)"
+            foreach($source in "$env:LOCALAPPDATA/nagisa_app/SquirrelSetup.log","$env:LOCALAPPDATA/SquirrelTemp/SquirrelSetup.log") {
+              if(Test-Path -LiteralPath $source) {
+                Get-Content -LiteralPath $source -Tail 9 | ForEach-Object { Write-Host "::warning title=Squirrel::$($_ -replace '%','%25')" }
+              }
+            }
+            throw
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: v1.0.2-verified-windows-setup
