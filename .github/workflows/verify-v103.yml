@@ -54,6 +54,13 @@ jobs:
             # Both disposable VM builds use faster compression. The release keeps LZMA.
             $source='installer/windows.nsi'
             $internal=(Get-Content -LiteralPath $source -Raw -Encoding utf8).Replace('/SOLID lzma','/SOLID zlib')
+            $failure=@'
+              failure:
+                  FileOpen $R7 "$TEMP\Nagisa-v103-validation-error.txt" w
+                  FileWriteUTF16LE /BOM $R7 "$Message"
+                  FileClose $R7
+            '@
+            $internal=$internal.Replace('    failure:', $failure)
             $internal -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
             $log="$root/build.log"
             npm.cmd run release:windows 2>&1 | Tee-Object -FilePath $log
@@ -95,5 +102,9 @@ jobs:
             & .github/acceptance/verify.ps1 -Setup (Resolve-Path -LiteralPath 'nagisa-app/out/release/v1.0.3/Nagisa-Desktop-Pet-1.0.3-win-x64-Setup.exe').Path -Later (Resolve-Path -LiteralPath 'nagisa-app/out/release/v1.0.4/Nagisa-Desktop-Pet-1.0.4-win-x64-Setup.exe').Path -Squirrel "$root/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Portable100 "$root/portable-1.0.0" -Portable101 "$root/portable-1.0.1"
           } catch {
             Write-Host "::error title=Windows setup test::$($_.Exception.Message)"
+            $diagnostic=Join-Path $env:TEMP 'Nagisa-v103-validation-error.txt'
+            if(Test-Path -LiteralPath $diagnostic){
+              Write-Host "::warning title=Installer message::$(Get-Content -LiteralPath $diagnostic -Encoding Unicode -Raw)"
+            }
             throw
           }

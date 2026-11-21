@@ -52,6 +52,8 @@ function Expect-Exit($Proc,[int]$Code,[string]$Label){
     Require ($Proc.ExitCode -eq $Code) "$Label exited with $($Proc.ExitCode), expected $Code."
 }
 function Run-Setup([string]$File,[string]$Directory='',[int]$Code=0){
+    $diagnostic=Join-Path $env:TEMP 'Nagisa-v103-validation-error.txt'
+    if(Test-Path -LiteralPath $diagnostic){Remove-Item -LiteralPath $diagnostic}
     $line='/S'
     if($Directory){$line+=" /D=$Directory"}
     Expect-Exit (Process-NoNode $File $line) $Code "Setup ($Directory)"
