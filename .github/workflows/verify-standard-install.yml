@@ -1,0 +1,87 @@
+name: v1.0.2 Standard-user offline setup check
+on:
+  push:
+    branches: ['codex/v1.0.2-standard-install']
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  ordinary:
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: v1.0.2-windows-setup
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: '44881863105'
+      - name: Install offline under a new standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $sand=(New-Item -ItemType Directory -Path "$env:PUBLIC/NagisaAcceptance").FullName
+          $setup=Join-Path $sand 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
+          Copy-Item -LiteralPath "candidate/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Destination $setup
+          if((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash -ne 'DAFAB435F443CF616352638AA6908ACDB1ECADE74A7666E085CE339B7EC88820'){ throw 'Artifact digest mismatch.' }
+          $newUser='NagisaAcceptance'
+          $password=ConvertTo-SecureString ('Q!a9'+[guid]::NewGuid().ToString('N')) -AsPlainText -Force
+          $account=New-LocalUser -Name $newUser -Password $password
+          $users=Get-LocalGroup -SID 'S-1-5-32-545'
+          if(!((Get-LocalGroupMember -Group $users).SID -contains $account.SID)){
+            Add-LocalGroupMember -Group $users -Member $account
+          }
+          $principal="$env:COMPUTERNAME\$newUser"
+          $argsForAcl=@($sand,'/grant',"${principal}:(OI)(CI)M")
+          & "$env:SystemRoot/System32/icacls.exe" @argsForAcl | Out-Null
+          if($LASTEXITCODE){throw 'Could not give the isolated test account access to its fixture.'}
+          $credential=[pscredential]::new($principal,$password)
+          $powershell="$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe"
+          $profileRoot="$env:SystemDrive/Users/$newUser"
+          $ruleTargets=@($setup,
+            "$profileRoot/AppData/Local/SquirrelTemp/Update.exe",
+            "$profileRoot/AppData/Local/nagisa_app/Update.exe",
+            "$profileRoot/AppData/Local/nagisa_app/app-1.0.2/Nagisa Desktop Pet.exe")
+          foreach($target in $ruleTargets){
+            New-NetFirewallRule -DisplayName 'Nagisa acceptance offline process' -Direction Outbound -Action Block -Program ([IO.Path]::GetFullPath($target)) | Out-Null
+          }
+          $exercise=@'
+          $ErrorActionPreference='Stop'
+          $log="$env:PUBLIC/NagisaAcceptance/result.txt"
+          try {
+            $user=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+            if($env:USERNAME -ne 'NagisaAcceptance'){throw 'The test process did not get the isolated user profile.'}
+            if($user.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'The isolated test user is an administrator.'}
+            $env:PATH="$env:SystemRoot\System32;$env:SystemRoot"
+            if(Get-Command node.exe -ErrorAction SilentlyContinue){throw 'Node remains available on PATH.'}
+            $setup="$env:PUBLIC/NagisaAcceptance/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe"
+            $expected="$env:LOCALAPPDATA/nagisa_app/app-1.0.2/Nagisa Desktop Pet.exe"
+            if(Test-Path -LiteralPath $expected){throw 'The test user must start fresh.'}
+            $proc=Start-Process -FilePath $setup -ArgumentList '--silent' -PassThru
+            if(!$proc.WaitForExit(90000) -or $proc.ExitCode -ne 0){throw "Setup failed with exit code $($proc.ExitCode)."}
+            if(!(Test-Path -LiteralPath $expected)){throw 'Setup did not install the expected application version.'}
+            $pet=Start-Process -FilePath "$env:LOCALAPPDATA/nagisa_app/Nagisa Desktop Pet.exe" -PassThru
+            $save="$env:APPDATA/Nagisa Desktop Pet/save.json"
+            $end=(Get-Date).AddSeconds(18)
+            while(!(Test-Path -LiteralPath $save) -and (Get-Date) -lt $end){Start-Sleep -Milliseconds 200}
+            if(!(Test-Path -LiteralPath $save)){throw 'The stable launcher did not create the first save.'}
+            $data=Get-Content -LiteralPath $save -Raw | ConvertFrom-Json
+            if($data.coins -ne 30){throw 'Initial save did not have the expected data.'}
+            'PASS Standard Windows profile, no Node on PATH, outbound blocked for Setup and application, fresh installation and default save' |
+              Set-Content -LiteralPath $log -Encoding ascii
+          } catch {
+            $_.Exception.Message | Set-Content -LiteralPath $log -Encoding ascii
+            exit 1
+          }
+          '@
+          $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($exercise))
+          $child=Start-Process -FilePath $powershell -Credential $credential -LoadUserProfile -ArgumentList @('-NoProfile','-EncodedCommand',$encoded) -PassThru
+          if(!$child.WaitForExit(155000)){throw 'The isolated standard-user test did not finish.'}
+          $result=Get-Content -LiteralPath "$sand/result.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if($child.ExitCode -ne 0 -or $result -notlike 'PASS*'){
+            Write-Host "::error title=Standard-user setup::$result"
+            throw 'The standard-user setup check failed.'
+          }
+          Write-Host "::notice title=Passed standard-user setup::$result"
