@@ -54,12 +54,12 @@ jobs:
             # Both disposable VM builds use faster compression. The release keeps LZMA.
             $source='installer/windows.nsi'
             $internal=(Get-Content -LiteralPath $source -Raw -Encoding utf8).Replace('/SOLID lzma','/SOLID zlib')
-            $failure=@'
-              failure:
-                  FileOpen $R7 "$TEMP\Nagisa-v103-validation-error.txt" w
-                  FileWriteUTF16LE /BOM $R7 "$Message"
-                  FileClose $R7
-            '@
+            $failure=@(
+              '    failure:'
+              '        FileOpen $R7 "$TEMP\Nagisa-v103-validation-error.txt" w'
+              '        FileWriteUTF16LE /BOM $R7 "$Message"'
+              '        FileClose $R7'
+            ) -join [Environment]::NewLine
             $internal=$internal.Replace('    failure:', $failure)
             $internal -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
             $log="$root/build.log"
