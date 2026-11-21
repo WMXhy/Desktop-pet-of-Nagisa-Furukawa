@@ -1,0 +1,76 @@
+name: v1.0.2 Windows installation acceptance
+on:
+  push:
+    branches: ['codex/v1.0.2-acceptance']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+      - name: Build full Windows Setup
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          npm.cmd ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm.cmd run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm.cmd run make -- --platform=win32 --arch=x64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $qa = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/nagisa-acceptance"
+          $setup = Join-Path $qa.FullName 'Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe'
+          Copy-Item -LiteralPath 'out/make/squirrel.windows/x64/Nagisa Desktop Pet-1.0.2 Setup.exe' -Destination $setup
+          Get-Item -LiteralPath $setup | Select-Object Name,Length | Format-List
+          Get-FileHash -LiteralPath $setup -Algorithm SHA256 | Format-List
+      - name: Fetch both historical portable releases
+        shell: pwsh
+        run: |
+          $qa = "$env:RUNNER_TEMP/nagisa-acceptance"
+          foreach ($version in '1.0.0','1.0.1') {
+            $zip = Join-Path $qa "$version.zip"
+            $url = "https://github.com/WMXhy/Desktop-pet-of-Nagisa-Furukawa/releases/download/v$version/Nagisa-Desktop-Pet-$version-win-x64.zip"
+            curl.exe --fail --location --retry 3 --silent --show-error $url -o $zip
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $extract = New-Item -ItemType Directory -Path (Join-Path $qa "portable-$version")
+            tar.exe -xf $zip -C $extract.FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - name: Build an internal 1.0.0 installer from the published app
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          $env:NAGISA_QA_ROOT = "$env:RUNNER_TEMP/nagisa-acceptance"
+          @'
+          const path = require('node:path');
+          const { createWindowsInstaller } = require('electron-winstaller');
+          const root = process.env.NAGISA_QA_ROOT;
+          createWindowsInstaller({
+            appDirectory: path.join(root, 'portable-1.0.0'),
+            outputDirectory: path.join(root, 'internal-1.0.0'),
+            name: 'nagisa_app', title: 'Nagisa Desktop Pet', authors: 'WMXhy', version: '1.0.0',
+            description: 'Nagisa Desktop Pet', exe: 'Nagisa Desktop Pet.exe',
+            setupExe: 'internal-1.0.0.exe', noMsi: true,
+          }).catch(error => { console.error(error); process.exitCode = 1; });
+          '@ | node.exe -
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise Setup and legacy migrations with a clean Windows profile
+        shell: pwsh
+        run: |
+          $qa = "$env:RUNNER_TEMP/nagisa-acceptance"
+          & .github/acceptance/verify-windows.ps1 -Setup "$qa/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe" -Baseline "$qa/internal-1.0.0/internal-1.0.0.exe" -Portable100 "$qa/portable-1.0.0" -Portable101 "$qa/portable-1.0.1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v1.0.2-verified-windows-setup
+          path: ${{ runner.temp }}/nagisa-acceptance/Nagisa-Desktop-Pet-1.0.2-win-x64-Setup.exe
+          compression-level: 0
+          retention-days: 5
