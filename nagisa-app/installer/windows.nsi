@@ -11,6 +11,8 @@ Name "古河渚桌宠"
 OutFile "${SETUP_EXE}"
 InstallDir "$LOCALAPPDATA\Programs\Nagisa Desktop Pet"
 InstallDirRegKey HKCU "Software\WMXhy\NagisaDesktopPet" "InstallDir"
+; Pass roots to our validator so NSIS cannot silently substitute the default directory.
+AllowRootDirInstall true
 CRCCheck force
 VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "Nagisa Desktop Pet"
