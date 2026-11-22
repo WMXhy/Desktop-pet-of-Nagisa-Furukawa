@@ -2,10 +2,17 @@ type PickupPose = 'hold' | 'left' | 'right';
 type PickupChange = { id: number; pose: PickupPose | null };
 
 interface Window {
+  quickMenu: {
+    ready(): void;
+    painted(id: number): void;
+    select(id: number, action: import('./quick-menu-layout').QuickMenuAction): void;
+    onPresent(callback: (presentation: import('./quick-menu-layout').QuickMenuPresentation) => void): () => void;
+    onShown(callback: (id: number) => void): () => void;
+  };
   pet: {
     start(id: number, x: number, y: number): void;
     move(id: number, x: number, y: number): void;
-    finish(id: number, x: number, y: number): Promise<boolean>;
+    finish(id: number, x: number, y: number): Promise<{ greet: boolean }>;
     cancel(id: number): void;
     onPickupChanged(callback: (change: PickupChange) => void): () => void;
     readCare(): Promise<import('./care').CareSnapshot>;
@@ -38,6 +45,7 @@ interface Window {
     cancelData(): Promise<void>;
     onSettingsChanged(callback: (view: import('./settings').SettingsView) => void): () => void;
     onPreviewAnimation(callback: () => void): () => void;
+    journalReady(): void;
     onJournalSection(callback: (section: import('./settings').JournalSection) => void): () => void;
     onCareChanged(callback: (change: import('./care').CareChange) => void): () => void;
     onFed(callback: (id: import('./care').FoodId) => void): () => void;

@@ -42,6 +42,56 @@ body,
   pointer-events: none;
 }
 
+.quick-menu {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+}
+
+.quick-menu--waiting { opacity: 0; }
+.quick-menu--fade { animation: quick-menu-in 130ms ease-out; }
+
+@keyframes quick-menu-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.quick-menu-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50% 50% 34% 34%;
+  background: transparent;
+  color: #382534;
+  font: 700 14px/1 "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+
+.quick-menu-button img {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  filter: var(--dango-tint) brightness(var(--dango-light, 1));
+}
+
+.quick-menu-button span { position: relative; transform: translateY(2px); }
+.quick-menu-button--feed { --dango-tint: sepia(.55) saturate(2.2) hue-rotate(295deg); }
+.quick-menu-button--bakery { --dango-tint: sepia(.7) saturate(2.1) hue-rotate(345deg); }
+.quick-menu-button--study { --dango-tint: sepia(.65) saturate(1.8) hue-rotate(45deg); }
+.quick-menu-button--game { --dango-tint: sepia(.56) saturate(1.9) hue-rotate(210deg); }
+.quick-menu-button:hover { --dango-light: 1.08; }
+.quick-menu-button:active { --dango-light: .88; }
+.quick-menu-button:focus-visible { outline: 2px solid #4d2d40; outline-offset: -3px; }
+
 .settings-shell,
 .settings-loading {
   height: 100%;

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { CareChange, CareSnapshot } from './care';
 import type { JournalSection, SettingsView } from './settings';
+import type { QuickMenuPresentation } from './quick-menu-layout';
 
 let careEpoch = 0;
 ipcRenderer.on('care:changed', (_event, change: CareChange) => { careEpoch = Math.max(careEpoch, change.snapshot.epoch); });
@@ -11,7 +12,15 @@ function subscribe<T>(channel: string, callback: (value: T) => void) {
   return () => { ipcRenderer.removeListener(channel, listener); };
 }
 
-contextBridge.exposeInMainWorld('pet', {
+if (location.hash === '#quick-menu') {
+  contextBridge.exposeInMainWorld('quickMenu', {
+    ready: () => ipcRenderer.send('quick-menu:ready'),
+    painted: (id) => ipcRenderer.send('quick-menu:painted', id),
+    select: (id, action) => ipcRenderer.send('quick-menu:select', id, action),
+    onPresent: (callback) => subscribe<QuickMenuPresentation>('quick-menu:present', callback),
+    onShown: (callback) => subscribe<number>('quick-menu:shown', callback),
+  } satisfies Window['quickMenu']);
+} else contextBridge.exposeInMainWorld('pet', {
   start: (id, x, y) => ipcRenderer.send('pet:start', id, x, y),
   move: (id, x, y) => ipcRenderer.send('pet:move', id, x, y),
   finish: (id, x, y) => ipcRenderer.invoke('pet:finish', id, x, y),
@@ -51,6 +60,7 @@ contextBridge.exposeInMainWorld('pet', {
   cancelData: () => ipcRenderer.invoke('data:cancel'),
   onSettingsChanged: (callback) => subscribe<SettingsView>('settings:changed', callback),
   onPreviewAnimation: (callback) => subscribe<void>('settings:preview-animation', callback),
+  journalReady: () => ipcRenderer.send('journal:ready'),
   onJournalSection: (callback) => subscribe<JournalSection>('journal:section', callback),
   onCareChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, change: import('./care').CareChange) => callback(change);

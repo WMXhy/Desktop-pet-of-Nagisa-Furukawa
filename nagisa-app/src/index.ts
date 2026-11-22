@@ -11,6 +11,8 @@ import { readSave } from './care-store';
 import { createCareRuntime } from './care-runtime';
 import { dangoHugMs, isDangoMode, isDangoSlot, type DangoMode } from './dango';
 import { petBounds, restorePosition, savePosition } from './pet-position';
+import type { QuickMenuAction } from './quick-menu-layout';
+import { createQuickMenu } from './quick-menu-window';
 import { practiceLineMs } from './relationship';
 import { watchDesktop } from './desktop-state';
 import { handleSquirrelStartup, migrateInstalledLogin } from './windows-install';
@@ -57,6 +59,7 @@ async function startPet(): Promise<void> {
     show: false,
     webPreferences,
   });
+  const quickMenu = createQuickMenu(petWindow, `${MAIN_WINDOW_WEBPACK_ENTRY}#quick-menu`, webPreferences, openQuickAction);
 
   let pendingSave: ReturnType<typeof setTimeout> | undefined;
   let previewOrigin: Rectangle | undefined;
@@ -93,7 +96,10 @@ async function startPet(): Promise<void> {
     if (!gesture) return;
     const dx = screenX - gesture.pointer.x;
     const dy = screenY - gesture.pointer.y;
-    if (Math.hypot(dx, dy) > 5) gesture.dragged = true;
+    if (!gesture.dragged && Math.hypot(dx, dy) > 5) {
+      gesture.dragged = true;
+      quickMenu.hide();
+    }
     if (gesture.dragged && desktopSettings.allowDrag && !desktopSettings.lockPosition &&
         !passThrough && petWindow.isVisible()) {
       const x = Math.round(gesture.origin.x + dx);
@@ -123,6 +129,7 @@ async function startPet(): Promise<void> {
       return;
     }
     const [x, y] = petWindow.getPosition();
+    quickMenu.continuePetGesture();
     endGesture();
     // 使用指针事件发生时的屏幕坐标，避免快速拖动时多条消息读到同一个鼠标位置。
     gesture = { id, pointer: { x: screenX, y: screenY }, origin: { x, y }, dragged: false, pose: null, turnX: screenX };
@@ -133,13 +140,14 @@ async function startPet(): Promise<void> {
     updateDrag(screenX, screenY);
   });
   ipc.handle('pet:finish', (event, id: number, screenX: number, screenY: number) => {
-    if (event.senderFrame !== contents.mainFrame || !gesture || gesture.id !== id) return false;
+    if (event.senderFrame !== contents.mainFrame || !gesture || gesture.id !== id) return { greet: false };
     const valid = Number.isFinite(screenX) && Number.isFinite(screenY);
     if (valid) updateDrag(screenX, screenY, true);
     const clicked = valid && !gesture.dragged && !passThrough && petWindow.isVisible();
     endGesture();
-    if (clicked) greetingClickUntil = performance.now() + 2000;
-    return clicked;
+    const greet = clicked && quickMenu.toggle(desktopSettings.reducedMotion);
+    if (greet) greetingClickUntil = performance.now() + 2000;
+    return { greet };
   });
   ipc.on('pet:cancel', (event, id: number) => {
     if (event.senderFrame === contents.mainFrame && gesture?.id === id) endGesture();
@@ -161,6 +169,7 @@ async function startPet(): Promise<void> {
     if (quitting || !windowsReady || petWindow.isDestroyed()) return;
     const temporarilyHidden = desktopState.fullscreen && desktopSettings.fullscreenQuiet && desktopSettings.fullscreenHide;
     if (userHidden || temporarilyHidden) {
+      quickMenu.hide();
       endGesture();
       if (petWindow.isVisible()) petWindow.hide();
     } else showPet();
@@ -170,6 +179,8 @@ async function startPet(): Promise<void> {
   function applyDesktop(kind: SettingsChange) {
     const { effective } = settings.view();
     if (!petWindow.isDestroyed() && !quitting) {
+      if (kind === 'preview' || effective.scale !== desktopSettings.scale ||
+          effective.displayId !== desktopSettings.displayId || effective.passThrough !== passThrough) quickMenu.hide();
       const bounds = petWindow.getBounds();
       if (kind === 'preview' && !previewOrigin) { previewOrigin = bounds; clearTimeout(pendingSave); }
       if (kind === 'cancel' || kind === 'apply' || effective.scale !== desktopSettings.scale || effective.displayId !== desktopSettings.displayId) {
@@ -193,6 +204,7 @@ async function startPet(): Promise<void> {
   }
 
   let journal: BrowserWindow | undefined;
+  let navigateJournal: ((section: JournalSection) => void) | undefined;
   let game: BrowserWindow | undefined;
   let settingsWindow: BrowserWindow | undefined;
   let gameMode: DangoMode = 'classic';
@@ -215,6 +227,7 @@ async function startPet(): Promise<void> {
   let care = createCareRuntime(directory, fast, publishCare, careEpoch);
   app.once('before-quit', () => {
     quitting = true;
+    quickMenu.hide();
     care.close();
   });
 
@@ -342,8 +355,8 @@ async function startPet(): Promise<void> {
   function openJournal(section?: JournalSection) {
     if (journal && !journal.isDestroyed()) {
       if (journal.isMinimized()) journal.restore();
-      journal.focus();
-      if (section) journal.webContents.send('journal:section', section);
+      if (journal.isVisible()) journal.focus();
+      if (section) navigateJournal?.(section);
       return;
     }
 
@@ -358,6 +371,21 @@ async function startPet(): Promise<void> {
     });
     journal = window;
     const journalContents = window.webContents;
+    let requested = section;
+    let ready = false;
+    navigateJournal = (next) => {
+      if (ready) journalContents.send('journal:section', next);
+      else requested = next;
+    };
+    journalContents.ipc.on('journal:ready', (event) => {
+      if (event.senderFrame !== journalContents.mainFrame || !event.senderFrame?.url.endsWith('#journal')) return;
+      ready = true;
+      if (requested) journalContents.send('journal:section', requested);
+      requested = undefined;
+    });
+    journalContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+      if (isMainFrame && !isSameDocument) ready = false;
+    });
     journalContents.ipc.handle('settings:open', (event) => {
       if (event.senderFrame !== journalContents.mainFrame) throw new Error('无效的设置请求');
       openSettings();
@@ -447,10 +475,10 @@ async function startPet(): Promise<void> {
     });
     window.once('ready-to-show', () => window.show());
     window.on('closed', () => {
-      if (journal === window) journal = undefined;
+      if (journal === window) { journal = undefined; navigateJournal = undefined; }
       if (!quitting && !desktopSettings.stayInTray) app.quit();
     });
-    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#journal${section ? `?${section}` : ''}`).catch((error) => {
+    void window.loadURL(`${MAIN_WINDOW_WEBPACK_ENTRY}#journal`).catch((error) => {
       if (window.isDestroyed()) return;
       console.error('手账无法打开', error);
       window.close();
@@ -595,6 +623,7 @@ async function startPet(): Promise<void> {
   tray.setToolTip(title);
 
   function recoverPet() {
+    quickMenu.hide();
     endGesture();
     userHidden = false;
     if (passThrough) settings.quick('passThrough', false, true);
@@ -632,14 +661,20 @@ async function startPet(): Promise<void> {
     ]));
   }
 
+  function openQuickAction(action: QuickMenuAction) {
+    if (action === 'game') openDangoGame();
+    else openJournal(action);
+  }
+
   contents.on('context-menu', () => {
+    quickMenu.hide();
     if (passThrough) return;
     Menu.buildFromTemplate([
       { label: '打开手账', click: () => openJournal() },
-      { label: '喂食', click: () => openJournal('feed') },
-      { label: '面包店帮工', click: () => openJournal('bakery') },
-      { label: '温习功课', click: () => openJournal('study') },
-      { label: '玩小游戏', click: () => openDangoGame() },
+      { label: '喂食', click: () => openQuickAction('feed') },
+      { label: '面包店帮工', click: () => openQuickAction('bakery') },
+      { label: '温习功课', click: () => openQuickAction('study') },
+      { label: '玩小游戏', click: () => openQuickAction('game') },
       { type: 'separator' },
       { label: '设置', click: openSettings },
       { label: '隐藏角色', click: togglePet },
@@ -647,6 +682,7 @@ async function startPet(): Promise<void> {
   });
 
   function recoverAfterDisplayRemoval() {
+    quickMenu.hide();
     const { x, y, width, height } = petWindow.getBounds();
     const fits = screen.getAllDisplays().some(({ workArea: area }) => (
       x >= area.x && y >= area.y && x + width <= area.x + area.width && y + height <= area.y + area.height
@@ -659,9 +695,14 @@ async function startPet(): Promise<void> {
     broadcastSettings();
   }
 
+  function onDisplayAdded() {
+    quickMenu.hide();
+    broadcastSettings();
+  }
+
   screen.on('display-removed', recoverAfterDisplayRemoval);
   screen.on('display-metrics-changed', recoverAfterDisplayRemoval);
-  screen.on('display-added', broadcastSettings);
+  screen.on('display-added', onDisplayAdded);
   const stopWatch = watchDesktop((state) => {
     desktopState = state;
     settings.setFullscreen(state.fullscreen);
@@ -680,7 +721,7 @@ async function startPet(): Promise<void> {
     clearInterval(quietTimer);
     screen.off('display-removed', recoverAfterDisplayRemoval);
     screen.off('display-metrics-changed', recoverAfterDisplayRemoval);
-    screen.off('display-added', broadcastSettings);
+    screen.off('display-added', onDisplayAdded);
     if (journal && !journal.isDestroyed()) journal.close();
     if (game && !game.isDestroyed()) game.close();
     if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();

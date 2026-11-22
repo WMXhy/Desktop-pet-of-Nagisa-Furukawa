@@ -45,6 +45,7 @@ import { dangoEnergyCost, dangoHugFrameMs, dangoHugMs, type DangoMode } from './
 import { DangoPanel } from './dango-panel';
 import { Backpack, SnackShop } from './food-panel';
 import { foodArt, type Frame } from './food-art';
+import { QuickMenu } from './quick-menu';
 import { RelationshipPanel } from './relationship-panel';
 import { SettingsPanel } from './settings-panel';
 import { defaultSettings, type JournalSection, type SettingsView } from './settings';
@@ -430,7 +431,8 @@ function Pet() {
     if (pressed?.pointerId !== event.pointerId) return;
     releasePointer();
     stopPickup.current?.();
-    if (await window.pet.finish(pressed.id, event.screenX, event.screenY)) greet.current?.();
+    const { greet: shouldGreet } = await window.pet.finish(pressed.id, event.screenX, event.screenY);
+    if (shouldGreet) greet.current?.();
   }
 
   function cancelPointer(event: PointerEvent<HTMLImageElement>) {
@@ -473,9 +475,9 @@ function Journal() {
 
   useEffect(() => {
     const select = (id: JournalSection) => { setPage('journal'); setSection({ id }); };
-    const initial = window.location.hash.split('?')[1];
-    if (initial === 'feed' || initial === 'bakery' || initial === 'study') select(initial);
-    return window.pet.onJournalSection(select);
+    const unsubscribe = window.pet.onJournalSection(select);
+    window.pet.journalReady();
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -568,10 +570,13 @@ function Journal() {
 const container = document.getElementById('root');
 if (!container) throw new Error('页面缺少 root 容器');
 
-const journalPage = window.location.hash.split('?')[0] === '#journal';
+const journalPage = window.location.hash === '#journal';
 const dangoPage = window.location.hash === '#dango-game';
 const settingsPage = window.location.hash === '#settings';
+const quickMenuPage = window.location.hash === '#quick-menu';
 if (journalPage) document.title = '渚的手账';
+if (quickMenuPage) document.title = '团子快捷菜单';
 if (dangoPage) document.title = '猜团子';
 if (settingsPage) document.title = '桌宠设置';
-createRoot(container).render(settingsPage ? h(SettingsPanel) : dangoPage ? h(DangoPanel) : journalPage ? h(Journal) : h(Pet));
+createRoot(container).render(quickMenuPage ? h(QuickMenu) : settingsPage ? h(SettingsPanel)
+  : dangoPage ? h(DangoPanel) : journalPage ? h(Journal) : h(Pet));
