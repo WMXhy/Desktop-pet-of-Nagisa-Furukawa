@@ -1,7 +1,23 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, screen } = require('electron');
+const electron = require('electron');
+const Module = require('node:module');
+const { app, BrowserWindow, screen } = electron;
+let cursor;
+let sampleCount = 0;
+const testElectron = Object.create(electron);
+Object.defineProperty(testElectron, 'screen', { get: () => new Proxy(screen, {
+  get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (key === 'getCursorScreenPoint') return () => { sampleCount++; return cursor ?? value.call(target); };
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+}) });
+const load = Module._load;
+Module._load = function (name, ...args) {
+  return name === 'electron' ? testElectron : load.call(this, name, ...args);
+};
 
 const { NAGISA_TEST_DATA: data, NAGISA_QA_ENTRY: entry, NAGISA_QA_RECEIPT: receipt,
   NAGISA_QA_CAPTURE: capture, NAGISA_QA_BASELINE: baseline } = process.env;
@@ -37,10 +53,7 @@ async function until(predicate, label, ms = 6000) {
 }
 
 async function accept() {
-  let cursor;
   let elapsed = 0;
-  const sample = screen.getCursorScreenPoint.bind(screen);
-  Object.defineProperty(screen, 'getCursorScreenPoint', { value: () => cursor ?? sample(), configurable: true });
   const clock = performance.now.bind(performance);
   Object.defineProperty(performance, 'now', { value: () => clock() + elapsed, configurable: true });
   const pet = await until(() => find(), 'pet');
@@ -98,7 +111,7 @@ async function accept() {
   if (!baseline) {
     await at(side);
     await tick(15_100);
-    assert.equal(menu.isVisible(), true, 'the pointer retained the side buttons past their deadline');
+    assert.equal(menu.isVisible(), true, 'the pointer retained the side buttons past their deadline ' + JSON.stringify({ cursor, sampleCount }));
   }
   await foodBar();
   const compact = await rect(menu, food);
@@ -112,13 +125,29 @@ async function accept() {
   })).toPNG());
   if (baseline) return [JSON.stringify(metrics)];
   reports.push('compact height 77 DIP, 54 DIP tiles and 13 DIP browser, 9 DIP below the visible rail');
+  if (process.env.NAGISA_QA_REGION) {
+    const { width, height } = menu.getBounds();
+    const x = Math.round(compact.left + compact.width / 2);
+    const argumentsForRegion = [menu.getNativeWindowHandle().readBigUInt64LE(), width, height,
+      x, Math.round(compact.bottom - 2), 1, x, Math.round(compact.top - 9), 0];
+    const { status } = require('node:child_process').spawnSync(process.env.NAGISA_QA_REGION,
+      argumentsForRegion.map(String), { windowsHide: true });
+    assert.equal(status, 0, 'only the shorter visible bar receives native input');
+    reports.push('native Windows region includes the last visible pixels and excludes the cropped band');
+  }
   const anchoredBottom = menu.getBounds().y + compact.bottom;
   await at(bread);
   await click(menu, bread);
   await until(async () => /已喂一个小面包/.test(await text(menu, '.quick-food-strip-feedback')), 'successful feed feedback');
   await until(async () => (await rect(menu, food)).height === 94, 'feedback height');
   assert.equal(menu.getBounds().y + (await rect(menu, food)).bottom, anchoredBottom);
+  await at(side);
   await until(async () => (await rect(menu, food)).height === 77, 'success clears after three seconds');
+  await tick(5500);
+  await visible(food);
+  await tick(1800);
+  await gone(food);
+  await foodBar();
   await at(dango);
   await click(menu, dango);
   await until(async () => /渚已经吃饱了/.test(await text(menu, '.quick-food-strip-feedback')), 'fullness feedback');
@@ -214,7 +243,8 @@ async function accept() {
   const frame = menu.getBounds();
   cursor = { x: frame.x + localRelease.x, y: frame.y + localRelease.y };
   menu.webContents.sendInputEvent({ type: 'mouseMove', ...localRelease, modifiers: ['leftbuttondown'] });
-  await tick(12_500);
+  await wait(12_050);
+  await nudge();
   await visible(card);
   menu.webContents.sendInputEvent({ type: 'mouseUp', ...localRelease, button: 'left', clickCount: 1 });
   await wait(120);
@@ -222,7 +252,7 @@ async function accept() {
   await visible(card);
   await tick(1400);
   await until(() => !menu.isVisible(), 'released outside then timed out');
-  reports.push('slider held outside for 12.5 simulated seconds protects every layer until release');
+  reports.push('slider held outside for twelve real seconds protects every layer until release');
 
   cursor = petCenter;
   await open();
