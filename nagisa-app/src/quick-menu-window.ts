@@ -71,7 +71,7 @@ export function createQuickMenu(pet: BrowserWindow, url: string,
   pet.webContents.on('before-input-event', (event, input) => {
     if (active && input.type === 'keyDown' && input.key === 'Escape') {
       event.preventDefault();
-      back();
+      if (!input.isAutoRepeat) back();
     }
   });
   pet.on('closed', () => {
@@ -152,7 +152,7 @@ export function createQuickMenu(pet: BrowserWindow, url: string,
     page.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown' && input.key === 'Escape') {
         event.preventDefault();
-        back();
+        if (!input.isAutoRepeat) back();
       }
     });
     window.on('blur', onBlur);

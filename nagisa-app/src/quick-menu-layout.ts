@@ -49,12 +49,24 @@ function foodPositions(pet: Rectangle, area: Rectangle, side: Rectangle) {
     }
   }
 
-  // In a crowded work area, keep the controls on screen and leave the side buttons exposed.
+  // Try a narrower stack beside the pet before using any of its footprint.
   const left = side.x > pet.x;
   const edge = left ? side.x - foodGap : rightEdge(side) + foodGap;
-  const usable = left ? edge - area.x : rightEdge(area) - edge;
-  const compactWidth = Math.min(width, usable);
-  const stackX = left ? clamp(x, area.x, edge - compactWidth) : clamp(x, edge, rightEdge(area) - compactWidth);
+  const leftLimit = Math.min(pet.x - foodGap, left ? rightEdge(area) : side.x - foodGap);
+  const rightStart = Math.max(rightEdge(pet) + foodGap, left ? rightEdge(side) + foodGap : area.x);
+  const leftRoom = leftLimit - area.x;
+  const rightRoom = rightEdge(area) - rightStart;
+  let minX = left ? area.x : edge;
+  let maxX = left ? edge : rightEdge(area);
+  if (leftRoom >= 106 && leftRoom >= rightRoom) {
+    minX = area.x;
+    maxX = leftLimit;
+  } else if (rightRoom >= 106) {
+    minX = rightStart;
+    maxX = rightEdge(area);
+  }
+  const compactWidth = Math.min(width, maxX - minX);
+  const stackX = clamp(x, minX, maxX - compactWidth);
   const available = Math.max(1, area.height - stripHeight - foodGap);
   const height = Math.min(cardHeight, available);
   const y = clamp(pet.y - height - stripHeight - 2 * foodGap, area.y, bottomEdge(area) - height - stripHeight - foodGap);
