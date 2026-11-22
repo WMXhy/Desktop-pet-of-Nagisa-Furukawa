@@ -96,11 +96,26 @@ async function accept() {
   await run(menu, 'document.querySelector(".quick-food-strip").style.width="175px"');
   await until(() => run(menu, 'document.querySelector(".quick-food-scroll").max > 1'), 'overflow scroll');
   await run(menu, 'document.querySelector(".quick-food-strip").dispatchEvent(new WheelEvent("wheel",{deltaY:400,bubbles:true,cancelable:true}))');
-  await until(() => run(menu, 'document.querySelector(".quick-food-items").scrollLeft > 20'), 'vertical-wheel horizontal browsing');
-  await run(menu, 'document.querySelector(".quick-food-scroll").focus()');
+  await until(() => run(menu, `(() => {
+    const left=document.querySelector('.quick-food-items').scrollLeft;
+    return left > 20 && document.querySelector('.quick-food-scroll').valueAsNumber === left;
+  })()`), 'vertical wheel and bottom control share the horizontal position');
+  menu.focus();
+  menu.webContents.focus();
+  await run(menu, `document.querySelector('.quick-food-scroll').focus();
+    window.testKeys=[];
+    for(const kind of ['keydown','input','change']) document.addEventListener(kind,e=>{
+      window.testKeys.push([e.type,e.key,e.target.className,e.target.value]);
+    },true);`);
   key(menu, 'Home');
-  await until(() => run(menu, 'document.querySelector(".quick-food-items").scrollLeft === 0'), 'bottom control sync');
-  await run(menu, 'document.querySelector(".quick-food-strip").style.removeProperty("width")');
+  try {
+    await until(() => run(menu, 'document.querySelector(".quick-food-items").scrollLeft === 0'), 'bottom control sync', 1200);
+  } catch (error) {
+    const details = await run(menu, `[window.testKeys,document.activeElement.className,
+      document.querySelector('.quick-food-scroll').value,document.querySelector('.quick-food-items').scrollLeft]`);
+    throw new Error(error.message + ': ' + JSON.stringify(details));
+  }
+  await run(menu, 'document.querySelector(".quick-food-strip").style.width=window.testView.strip.width+"px"');
   await until(() => run(menu, 'document.querySelector(".quick-food-scroll").disabled'), 'entire track at wide layout');
   reports.push('all three foods, zero-stock icon, wheel browsing and bottom control use one scroll position');
 
@@ -114,7 +129,7 @@ async function accept() {
   await isVisible(menu, tooltip);
   assert.match(await readText(menu, tooltip), /红豆面包.*心情 \+3.*饱食度 \+5.*好感 \+0.*已吃完/s);
   await hover(bread);
-  await isVisible(menu, tooltip);
+  await until(async () => /小面包/.test(await readText(menu, tooltip)), 'bread preview after the second delay');
   assert.match(await readText(menu, tooltip), /小面包.*心情 \+0.*饱食度 \+5.*好感 \+0/s);
   await click(menu, bread, 'contextmenu');
   await isVisible(menu, card);
