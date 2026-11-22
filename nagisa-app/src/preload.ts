@@ -17,6 +17,8 @@ if (location.hash === '#quick-menu') {
     ready: () => ipcRenderer.send('quick-menu:ready'),
     painted: (id) => ipcRenderer.send('quick-menu:painted', id),
     select: (id, action) => ipcRenderer.send('quick-menu:select', id, action),
+    activity: (id, layers) => ipcRenderer.send('quick-menu:activity', id, layers),
+    feedback: (id, session, visible) => ipcRenderer.send('quick-menu:feedback', id, session, visible),
     overlay: (id, session, change) => ipcRenderer.send('quick-menu:overlay', id, session, change),
     readCare: (id, session) => ipcRenderer.invoke('quick-menu:care', id, session),
     changeFood: (id, session, food, revision, epoch, purchase) =>

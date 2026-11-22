@@ -5,7 +5,7 @@ export const quickMenuActions = ['feed', 'bakery', 'study', 'game'] as const;
 export type QuickMenuAction = typeof quickMenuActions[number];
 export type QuickMenuPresentation = { id: number; reducedMotion: boolean };
 export type FoodOverlay = { token: number; food: FoodId } & (
-  { kind: 'card'; keyboard: boolean } | { kind: 'tip'; anchor: number });
+  { kind: 'card'; keyboard: boolean } | { kind: 'tip'; target: Rectangle });
 export type QuickMenuView = {
   id: number;
   foodSession?: number;
@@ -14,13 +14,17 @@ export type QuickMenuView = {
   strip?: Rectangle;
   panel?: Rectangle;
 };
+export const quickMenuLayer = (id: number) => `menu:${id}`;
+export const quickFoodLayer = (session: number) => `food:${session}`;
+export const quickOverlayLayer = (session: number, token: number) => `food:${session}:${token}`;
 
 const width = 82;
 const rowHeight = 44;
 const rowGap = 4;
 const petGap = 2;
 const foodGap = 6;
-const stripHeight = 96;
+const compactStripHeight = 77;
+const feedbackHeight = 17;
 const cardHeight = 160;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const rightEdge = (rect: Rectangle) => rect.x + rect.width;
@@ -30,7 +34,7 @@ function overlaps(a: Rectangle, b: Rectangle) {
   return a.x < rightEdge(b) && b.x < rightEdge(a) && a.y < bottomEdge(b) && b.y < bottomEdge(a);
 }
 
-function foodPositions(pet: Rectangle, area: Rectangle, side: Rectangle) {
+function foodPositions(pet: Rectangle, area: Rectangle, side: Rectangle, stripHeight: number) {
   const width = Math.min(304, area.width - 2 * foodGap);
   const x = clamp(Math.round(pet.x + (pet.width - width) / 2), area.x, rightEdge(area) - width);
   const fits = (rect: Rectangle) => rect.x >= area.x && rect.y >= area.y &&
@@ -75,7 +79,7 @@ function foodPositions(pet: Rectangle, area: Rectangle, side: Rectangle) {
   return { strip, card };
 }
 
-export function quickMenuLayout(pet: Rectangle, area: Rectangle, food = false, overlay?: FoodOverlay) {
+export function quickMenuLayout(pet: Rectangle, area: Rectangle, food = false, overlay?: FoodOverlay, feedback = false) {
   const right = pet.x + pet.width + petGap;
   const left = pet.x - petGap;
   const roomRight = area.x + area.width - right;
@@ -94,14 +98,14 @@ export function quickMenuLayout(pet: Rectangle, area: Rectangle, food = false, o
     width: menuWidth,
     height,
   };
-  const positions = food ? foodPositions(pet, area, side) : undefined;
+  const positions = food ? foodPositions(pet, area, side, compactStripHeight + (feedback ? feedbackHeight : 0)) : undefined;
   const strip = positions?.strip;
   let panel = overlay && positions?.card;
   if (panel && strip && overlay?.kind === 'tip') {
     const width = Math.min(panel.width, 202);
     const height = Math.min(panel.height, 69);
     panel = {
-      x: clamp(Math.round(strip.x + overlay.anchor - width / 2), panel.x, rightEdge(panel) - width),
+      x: clamp(Math.round(strip.x + overlay.target.x + (overlay.target.width - width) / 2), panel.x, rightEdge(panel) - width),
       y: clamp(strip.y - height - foodGap, panel.y, bottomEdge(panel) - height),
       width, height,
     };
@@ -115,5 +119,5 @@ export function quickMenuLayout(pet: Rectangle, area: Rectangle, food = false, o
     x: side.x - x, y: side.y - y + index * (row + rowGap), width: menuWidth, height: row,
   }));
   return { bounds, side: local(side), strip: strip && local(strip), panel: panel && local(panel),
-    shape: [...rows, ...visible.slice(1).map(local)] };
+    rows, shape: [...rows, ...visible.slice(1).map(local)] };
 }

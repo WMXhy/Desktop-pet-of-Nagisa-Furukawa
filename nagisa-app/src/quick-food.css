@@ -94,6 +94,16 @@
   overflow: hidden;
 }
 
+.quick-food-strip-feedback { margin-top: 2px; }
+.quick-food-feedback-empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  clip-path: inset(50%);
+}
+
 .quick-food-tip { padding: 7px 8px; pointer-events: none; }
 .quick-food-tip strong { display: block; margin-bottom: 3px; }
 .quick-food-tip div { font-size: 11px; }

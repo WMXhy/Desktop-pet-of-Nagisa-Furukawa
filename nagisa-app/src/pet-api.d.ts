@@ -6,6 +6,8 @@ interface Window {
     ready(): void;
     painted(id: number): void;
     select(id: number, action: import('./quick-menu-layout').QuickMenuAction): void;
+    activity(id: number, layers: string[]): void;
+    feedback(id: number, session: number, visible: boolean): void;
     overlay(id: number, session: number, change: import('./quick-menu-layout').FoodOverlay | { kind: 'close'; token: number }): void;
     readCare(id: number, session: number): Promise<import('./care').CareSnapshot>;
     changeFood(id: number, session: number, food: import('./care').FoodId, revision: number, epoch: number,
