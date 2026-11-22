@@ -101,11 +101,11 @@ async function accept() {
   async function tick(ms) { elapsed += ms; await nudge(); }
   async function visible(selector) { await until(() => exists(menu, selector), selector); }
   async function gone(selector) { await until(async () => !(await exists(menu, selector)), 'closed ' + selector); }
-  async function foodBar() {
+  async function foodBar(expectedBread = 1) {
     await at(side);
     await click(menu, side);
     await visible(food);
-    await until(async () => await text(menu, bread) === '×1', 'seeded inventory');
+    await until(async () => await text(menu, bread) === `×${expectedBread}`, 'expected bread inventory');
     if (!baseline) await until(() => run(menu, 'document.querySelector(".quick-food-strip").offsetHeight === 77'), 'compact food bar');
   }
   if (!baseline) {
@@ -147,7 +147,7 @@ async function accept() {
   await visible(food);
   await tick(1800);
   await gone(food);
-  await foodBar();
+  await foodBar(0);
   await at(dango);
   await click(menu, dango);
   await until(async () => /渚已经吃饱了/.test(await text(menu, '.quick-food-strip-feedback')), 'fullness feedback');
@@ -279,6 +279,32 @@ async function accept() {
   assert.equal(final.coins, initial.coins);
   assert.deepEqual(final.inventory, { ...initial.inventory, bread: 0 });
   reports.push('keyboard retains its layer; three Esc presses still close one layer at a time; waits do not change care or saved position');
+
+  cursor = petCenter;
+  await open();
+  await foodBar(0);
+  await at(red);
+  await click(menu, red, 'contextmenu');
+  await visible(card);
+  await at('.quick-food-checkout button');
+  await click(menu, '.quick-food-checkout button');
+  await gone(card);
+  await until(async () => await text(menu, red) === '×1', 'restocked red bean bread');
+  const purchased = (await run(pet, 'window.pet.readCare()')).state;
+  assert.equal(purchased.coins, initial.coins - 12);
+  assert.equal(purchased.fullness, final.fullness);
+  await click(menu, '.quick-menu-button--study');
+  const journal = await until(() => find('#journal'), 'study journal');
+  await run(journal, 'window.pet.openSettings()');
+  const settings = await until(() => find('#settings'), 'settings');
+  await until(() => exists(settings, '.settings-main'), 'settings renderer');
+  cursor = petCenter;
+  await open();
+  await foodBar(0);
+  const result = await run(settings, '(async()=>{const v=await window.pet.readSettings();return window.pet.applySettings({...v.settings,passThrough:true})})()');
+  assert.equal(result.ok, true);
+  await until(() => !menu.isVisible(), 'mouse pass-through immediately closes the group');
+  reports.push('right-click purchase succeeds and enabling mouse pass-through immediately closes the group');
   return reports;
 }
 
