@@ -261,9 +261,13 @@ async function accept() {
   await at(red);
   await click(menu, red, 'contextmenu');
   await visible(card);
+  menu.focus();
+  menu.webContents.focus();
   await run(menu, `document.querySelector('${slider}').focus()`);
   menu.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Right' });
   menu.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Right' });
+  await until(() => run(menu, `document.querySelector('${slider}').valueAsNumber === 2`), 'keyboard moved the quantity slider');
+  await nudge();
   cursor = petCenter;
   await tick(12_000);
   await visible(card);
