@@ -157,6 +157,37 @@ async function accept() {
   await closed();
   assert.equal(dismiss.id, menuId);
   reports.push('losing focus to a different window and Esc dismiss the reused menu');
+
+  await run(book, 'window.pet.openSettings()');
+  const prefs = await waitFor(() => find('#settings')?.isVisible() && find('#settings'), 'settings window');
+  const setPreferences = (changes) => run(prefs, `(async ()=>{
+    const view=await window.pet.readSettings();
+    return window.pet.applySettings({...view.settings,...${JSON.stringify(changes)}});
+  })()`);
+  assert.equal((await setPreferences({ scale: 150, reducedMotion: true, lockPosition: true })).ok, true);
+  const large = pet.getBounds();
+  assert.equal(large.width, 384);
+  await tap();
+  const staticMenu = await menu();
+  assert.equal(await run(staticMenu, 'document.getAnimations().length'), 0);
+  assert.equal(await run(staticMenu, 'getComputedStyle(document.querySelector(".quick-menu")).opacity'), '1');
+  assert.equal(staticMenu.getBounds().width, 82);
+  await tap(6);
+  await closed();
+  assert.deepEqual(pet.getBounds(), large);
+  await tap();
+  await menu();
+  assert.equal((await setPreferences({ passThrough: true })).ok, true);
+  await closed();
+  assert.equal((await tap()).greet, false);
+  assert.equal((await setPreferences({ passThrough: false })).ok, true);
+  await tap();
+  await menu();
+  pet.hide();
+  await closed();
+  pet.show();
+  assert.ok(!find('#quick-menu')?.isVisible());
+  reports.push('150% scaling, reduced motion, locked position, mouse pass-through and pet hide/show');
   return reports;
 }
 

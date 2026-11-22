@@ -85,7 +85,11 @@ foreach($name in $fixtureNames){
 Check-Launch
 Write-Host '::notice title=Passed installed upgrade::Official v1.0.3 to v1.1.0 at the same path; Start menu launch and byte-for-byte retention of care, preferences and position.'
 
-$Electron=(Resolve-Path -LiteralPath 'nagisa-app/node_modules/electron/dist/electron.exe').Path
+$runtime=New-Item -ItemType Directory -Path (Join-Path $root 'runtime')
+$zip=Join-Path $env:RUNNER_TEMP 'v110-build/electron-v45.4.1-win32-x64.zip'
+& "$env:SystemRoot/System32/tar.exe" -xf $zip -C $runtime.FullName
+Confirm ($LASTEXITCODE -eq 0) 'Could not unpack the previously verified test runtime.'
+$Electron=(Resolve-Path -LiteralPath (Join-Path $runtime.FullName 'electron.exe')).Path
 $harness=(Resolve-Path -LiteralPath '.github/acceptance/acceptance.cjs').Path
 $env:NAGISA_QA_ENTRY="$destination\resources\app.asar\.webpack\main\index.js"
 $env:NAGISA_QA_RECEIPT=Join-Path $root 'receipt.json'
