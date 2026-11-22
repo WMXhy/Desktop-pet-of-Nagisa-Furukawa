@@ -6,8 +6,15 @@ interface Window {
     ready(): void;
     painted(id: number): void;
     select(id: number, action: import('./quick-menu-layout').QuickMenuAction): void;
+    overlay(id: number, session: number, change: import('./quick-menu-layout').FoodOverlay | { kind: 'close'; token: number }): void;
+    readCare(id: number, session: number): Promise<import('./care').CareSnapshot>;
+    changeFood(id: number, session: number, food: import('./care').FoodId, revision: number, epoch: number,
+      purchase?: { token: number; quantity: number }): Promise<import('./care').CareResponse>;
+    onCareChanged(callback: (change: import('./care').CareChange) => void): () => void;
     onPresent(callback: (presentation: import('./quick-menu-layout').QuickMenuPresentation) => void): () => void;
+    onView(callback: (view: import('./quick-menu-layout').QuickMenuView) => void): () => void;
     onShown(callback: (id: number) => void): () => void;
+    onClosed(callback: (id: number) => void): () => void;
   };
   pet: {
     start(id: number, x: number, y: number): void;

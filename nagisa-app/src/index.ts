@@ -59,7 +59,9 @@ async function startPet(): Promise<void> {
     show: false,
     webPreferences,
   });
-  const quickMenu = createQuickMenu(petWindow, `${MAIN_WINDOW_WEBPACK_ENTRY}#quick-menu`, webPreferences, openQuickAction);
+  const quickMenu = createQuickMenu(petWindow, `${MAIN_WINDOW_WEBPACK_ENTRY}#quick-menu`, webPreferences, openQuickAction, {
+    read: () => care.read(), feed: feedFood, buy: (id, quantity, revision) => care.buy(id, quantity, revision),
+  });
 
   let pendingSave: ReturnType<typeof setTimeout> | undefined;
   let previewOrigin: Rectangle | undefined;
@@ -212,6 +214,7 @@ async function startPet(): Promise<void> {
   const fast = !app.isPackaged && process.env.NAGISA_FAST_ACTIVITY === '1';
   let careEpoch = 0;
   function publishCare(change: CareChange) {
+    quickMenu.updateFood(change.snapshot);
     for (const window of [petWindow, journal, game]) {
       if (!window || window.isDestroyed()) continue;
       const page = window.webContents;
@@ -233,6 +236,12 @@ async function startPet(): Promise<void> {
 
   function ensureEpoch(epoch: unknown) {
     if (epoch !== careEpoch) throw new Error('养成档已更新，请重新操作。');
+  }
+
+  function feedFood(id: FoodId, revision: number) {
+    const result = care.feed(id, revision);
+    if (result.ok && !petWindow.isDestroyed() && petWindow.isVisible()) contents.send('care:fed', id);
+    return result;
   }
 
   function sendSettings(window: BrowserWindow) {
@@ -400,25 +409,18 @@ async function startPet(): Promise<void> {
       }
       openDangoGame(requestedDangoMode(mode));
     });
-    function feed(id: FoodId, revision: number) {
-      const result = care.feed(id, revision);
-      if (result.ok && !petWindow.isDestroyed() && petWindow.isVisible()) {
-        contents.send('care:fed', id);
-      }
-      return result;
-    }
     journalContents.ipc.handle('care:feed', (event, revision: number, epoch: unknown) => {
       ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !Number.isSafeInteger(revision) || revision < 0) {
         throw new Error('无效的喂食请求');
       }
-      return feed('bread', revision);
+      return feedFood('bread', revision);
     });
     journalContents.ipc.handle('care:feed-food', (event, id: unknown, revision: number, epoch: unknown) => {
       ensureEpoch(epoch);
       if (event.senderFrame !== journalContents.mainFrame || !isFoodId(id) ||
           !Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的喂食请求');
-      return feed(id, revision);
+      return feedFood(id, revision);
     });
     journalContents.ipc.handle('care:buy', (event, id: unknown, quantity: number, revision: number, epoch: unknown) => {
       ensureEpoch(epoch);

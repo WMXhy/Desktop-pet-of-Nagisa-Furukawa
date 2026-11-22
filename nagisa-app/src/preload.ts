@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { CareChange, CareSnapshot } from './care';
 import type { JournalSection, SettingsView } from './settings';
-import type { QuickMenuPresentation } from './quick-menu-layout';
+import type { QuickMenuPresentation, QuickMenuView } from './quick-menu-layout';
 
 let careEpoch = 0;
 ipcRenderer.on('care:changed', (_event, change: CareChange) => { careEpoch = Math.max(careEpoch, change.snapshot.epoch); });
@@ -17,8 +17,15 @@ if (location.hash === '#quick-menu') {
     ready: () => ipcRenderer.send('quick-menu:ready'),
     painted: (id) => ipcRenderer.send('quick-menu:painted', id),
     select: (id, action) => ipcRenderer.send('quick-menu:select', id, action),
+    overlay: (id, session, change) => ipcRenderer.send('quick-menu:overlay', id, session, change),
+    readCare: (id, session) => ipcRenderer.invoke('quick-menu:care', id, session),
+    changeFood: (id, session, food, revision, epoch, purchase) =>
+      ipcRenderer.invoke('quick-menu:food', id, session, food, revision, epoch, purchase),
+    onCareChanged: (callback) => subscribe<CareSnapshot>('quick-menu:care-changed', (snapshot) => callback({ snapshot })),
     onPresent: (callback) => subscribe<QuickMenuPresentation>('quick-menu:present', callback),
+    onView: (callback) => subscribe<QuickMenuView>('quick-menu:view', callback),
     onShown: (callback) => subscribe<number>('quick-menu:shown', callback),
+    onClosed: (callback) => subscribe<number>('quick-menu:closed', callback),
   } satisfies Window['quickMenu']);
 } else contextBridge.exposeInMainWorld('pet', {
   start: (id, x, y) => ipcRenderer.send('pet:start', id, x, y),

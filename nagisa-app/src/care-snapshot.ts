@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { activityDurations, type CareSnapshot } from './care';
 
-export function useCareSnapshot() {
+export function useCareSnapshot(source: Pick<Window['pet'], 'readCare' | 'onCareChanged'> = window.pet) {
   const [care, setCare] = useState<CareSnapshot>();
   const [readStatus, setReadStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
   const updates = useRef(0);
@@ -14,7 +14,7 @@ export function useCareSnapshot() {
   async function loadCare() {
     const before = updates.current;
     try {
-      const snapshot = await window.pet.readCare();
+      const snapshot = await source.readCare();
       setReadStatus((previous) => snapshot.ok || previous === 'ready' ? 'ready' : 'failed');
       // 退出未完成的对局只改变内存状态，推送可以比同修订号的读取回执更新。
       if (updates.current === before) updateSnapshot(snapshot);
@@ -27,7 +27,7 @@ export function useCareSnapshot() {
   }
 
   useEffect(() => {
-    const unsubscribe = window.pet.onCareChanged(({ snapshot }) => {
+    const unsubscribe = source.onCareChanged(({ snapshot }) => {
       updates.current += 1;
       updateSnapshot(snapshot);
     });
