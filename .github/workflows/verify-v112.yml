@@ -1,0 +1,93 @@
+name: v1.1.2 Windows acceptance
+on:
+  push:
+    branches: ['codex/v1.1.2-acceptance']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+      - name: Install dependencies and typecheck
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          npm.cmd ci --no-audit --no-fund
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+          npm.cmd run typecheck
+          exit $LASTEXITCODE
+      - name: Build the v1.1.2 Windows setup
+        shell: pwsh
+        working-directory: nagisa-app
+        run: |
+          $ErrorActionPreference='Stop'
+          try {
+            $root=(New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/v112-build").FullName
+            curl.exe -fsSL --retry 2 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip' -o "$root/nsis.zip"
+            if($LASTEXITCODE){throw 'NSIS download failed.'}
+            if((Get-FileHash -LiteralPath "$root/nsis.zip" -Algorithm SHA256).Hash -ne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8'){throw 'NSIS checksum mismatch.'}
+            Expand-Archive -LiteralPath "$root/nsis.zip" -DestinationPath "$root/nsis"
+            $env:NAGISA_MAKENSIS="$root/nsis/nsis-3.13/makensis.exe"
+            $v=(Get-Content node_modules/electron/package.json -Raw | ConvertFrom-Json).version
+            $zip="electron-v${v}-win32-x64.zip"
+            $base="https://github.com/electron/electron/releases/download/v$v"
+            curl.exe -fsSL --retry 2 "$base/$zip" -o "$root/$zip"
+            if($LASTEXITCODE){throw 'Electron runtime download failed.'}
+            curl.exe -fsSL --retry 2 "$base/SHASUMS256.txt" -o "$root/SHASUMS256.txt"
+            if($LASTEXITCODE){throw 'Electron checksum manifest download failed.'}
+            $line=Get-Content -LiteralPath "$root/SHASUMS256.txt" | Where-Object {$_.EndsWith("*$zip")}
+            if(($line -split '\s+')[0] -ne (Get-FileHash -LiteralPath "$root/$zip" -Algorithm SHA256).Hash){throw 'Electron runtime checksum mismatch.'}
+            $env:NAGISA_ELECTRON_ZIP_DIR=$root
+            $env:NAGISA_FORGE_EXTRACT_MODULE=(Resolve-Path -LiteralPath 'node_modules/@electron/packager/dist/unzip.js').Path
+            $hook=(Resolve-Path -LiteralPath '../.github/acceptance/forge-extract.cjs').Path
+            $env:NODE_OPTIONS='--require='+$hook.Replace('\','/')
+            # Use faster compression for this disposable build. The local release uses LZMA.
+            $source='installer/windows.nsi'
+            $nsi=(Get-Content -LiteralPath $source -Raw -Encoding utf8).Replace('/SOLID lzma','/SOLID zlib')
+            $nsi -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
+            npm.cmd run release:windows
+            if($LASTEXITCODE){throw 'Windows release build failed.'}
+          } catch { Write-Host "::error title=Build failed::$($_.Exception.Message)"; throw }
+      - name: Rebuild the v1.1.1 upgrade baseline from its recorded source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try {
+            $sha='fd160f0670553f17f4ebcdd0d52786fcc1bd7707'
+            git fetch --no-tags --depth=1 origin $sha
+            if($LASTEXITCODE){throw 'Could not fetch the baseline commit.'}
+            $root="$env:RUNNER_TEMP/v112-build"
+            $stage=(New-Item -ItemType Directory -Path "$root/baseline").FullName
+            $archive="$root/baseline.tar"
+            git archive --format=tar --output=$archive $sha nagisa-app
+            if($LASTEXITCODE){throw 'Could not archive the baseline.'}
+            & "$env:SystemRoot/System32/tar.exe" -xf $archive -C $stage
+            if($LASTEXITCODE){throw 'Could not extract the baseline.'}
+            $nodeModules=(Resolve-Path -LiteralPath 'nagisa-app/node_modules').Path
+            $env:NAGISA_MAKENSIS="$root/nsis/nsis-3.13/makensis.exe"
+            $env:NAGISA_ELECTRON_ZIP_DIR=$root
+            $env:NAGISA_FORGE_EXTRACT_MODULE=(Resolve-Path -LiteralPath 'nagisa-app/node_modules/@electron/packager/dist/unzip.js').Path
+            $hook=(Resolve-Path -LiteralPath '.github/acceptance/forge-extract.cjs').Path
+            $env:NODE_OPTIONS='--require='+$hook.Replace('\','/')
+            Set-Location -LiteralPath "$stage/nagisa-app"
+            New-Item -ItemType Junction -Path 'node_modules' -Target $nodeModules | Out-Null
+            $source='installer/windows.nsi'
+            $nsi=(Get-Content -LiteralPath $source -Raw -Encoding utf8).Replace('/SOLID lzma','/SOLID zlib')
+            $nsi -replace '(?m)^SetCompressorDictSize 32\r?\n','' | Set-Content -LiteralPath $source -Encoding utf8NoBOM
+            npm.cmd run release:windows
+            if($LASTEXITCODE){throw 'Baseline setup build failed.'}
+          } catch { Write-Host "::error title=Build failed::$($_.Exception.Message)"; throw }
+      - name: Upgrade v1.1.1 and verify the installed layered menu
+        shell: pwsh
+        run: |
+          try { & .github/acceptance/verify-upgrade.ps1 }
+          catch { Write-Host "::error title=Windows acceptance failed::$($_.Exception.Message -replace '\r?\n',' ')"; throw }
